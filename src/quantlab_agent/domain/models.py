@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -155,3 +155,150 @@ class MetricResult(FrozenModel):
     analysis_id: str
     calculation_version: str = "metrics-v1"
     assets: tuple[AssetMetricResult, ...]
+
+
+# ---------------------------------------------------------------------------
+# M2: run state, tool calling envelopes, and persisted artifacts.
+# ---------------------------------------------------------------------------
+
+
+class RunMode(StrEnum):
+    DEMO = "demo"
+    REAL_AGENT = "real_agent"
+
+
+class RunStatus(StrEnum):
+    IDLE = "idle"
+    DATA_READY = "data_ready"
+    RUNNING = "running"
+    NEEDS_CLARIFICATION = "needs_clarification"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+TERMINAL_RUN_STATUSES: frozenset[RunStatus] = frozenset(
+    {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED}
+)
+
+
+class RunBudget(FrozenModel):
+    max_model_interactions: int = Field(ge=0)
+    max_tool_executions: int = Field(ge=0)
+    max_same_validation_retry: int = Field(ge=0)
+    max_retryable_network_errors: int = Field(ge=0)
+    per_request_timeout_seconds: int = Field(ge=0)
+    total_deadline_seconds: int = Field(ge=0)
+
+
+class RunCounters(FrozenModel):
+    model_interactions_used: int = Field(default=0, ge=0)
+    tool_executions_used: int = Field(default=0, ge=0)
+    same_validation_retries_used: int = Field(default=0, ge=0)
+    retryable_network_errors_used: int = Field(default=0, ge=0)
+
+
+class Run(FrozenModel):
+    schema_version: Literal["run-v1"] = "run-v1"
+    run_id: str
+    session_id: str
+    mode: RunMode
+    status: RunStatus
+    user_request: str
+    dataset_ids: tuple[str, ...]
+    analysis_id: str | None = None
+    metrics_id: str | None = None
+    chart_ids: tuple[str, ...] = ()
+    report_id: str | None = None
+    budgets: RunBudget
+    counters: RunCounters = RunCounters()
+    context_snapshot: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    failure: dict[str, Any] | None = None
+
+
+class ToolStatus(StrEnum):
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+class ChartKind(StrEnum):
+    NORMALIZED_PRICES = "normalized_prices"
+    DRAWDOWN = "drawdown"
+
+
+class ReportSection(StrEnum):
+    OVERVIEW = "overview"
+    DATA_SOURCES = "data_sources"
+    DATA_QUALITY = "data_quality"
+    METHODOLOGY = "methodology"
+    METRICS_TABLE = "metrics_table"
+    LIMITATIONS = "limitations"
+    RUN_INFO = "run_info"
+
+
+class EvidenceRef(FrozenModel):
+    kind: Literal["dataset", "analysis", "metrics", "chart", "report"]
+    ref_id: str
+    analysis_id: str | None = None
+
+
+class Provenance(FrozenModel):
+    session_id: str
+    run_id: str
+    dataset_ids: tuple[str, ...]
+    analysis_id: str | None = None
+    metrics_id: str | None = None
+    chart_ids: tuple[str, ...] = ()
+
+
+class ToolResultEnvelope(FrozenModel):
+    ok: bool
+    run_id: str
+    tool_call_id: str
+    data: dict[str, Any] | None = None
+    warnings: tuple[dict[str, Any], ...] = ()
+    error: dict[str, Any] | None = None
+    provenance: Provenance
+
+
+class ToolCallRecord(FrozenModel):
+    tool_call_id: str
+    run_id: str
+    tool_name: str
+    arguments_redacted: dict[str, Any]
+    status: ToolStatus
+    started_at: datetime
+    completed_at: datetime | None = None
+    result_envelope: ToolResultEnvelope | None = None
+    error_code: str | None = None
+
+
+class ChartArtifact(FrozenModel):
+    chart_id: str
+    run_id: str
+    analysis_id: str
+    kind: ChartKind
+    png_path: str
+    data_path: str
+    data_sha256: str
+    title: str
+    x_label: str
+    y_label: str
+    series_labels: tuple[str, ...]
+    created_at: datetime
+
+
+class ReportArtifact(FrozenModel):
+    report_id: str
+    run_id: str
+    analysis_id: str
+    metrics_id: str
+    chart_ids: tuple[str, ...]
+    section_ids: tuple[ReportSection, ...]
+    evidence_refs: tuple[EvidenceRef, ...]
+    markdown_path: str
+    created_at: datetime

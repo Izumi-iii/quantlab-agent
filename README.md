@@ -3,7 +3,14 @@ A tool-calling agent for reproducible financial data analysis.
 
 ## Current status
 
-Milestone M1 is complete: the repository contains the deterministic core for CSV validation, date alignment, period return, annualized volatility, and maximum drawdown. The Agent, persistence, charts, reports, and UI are not implemented yet.
+The local deterministic pipeline is now runnable:
+
+- CSV validation, date alignment, period return, annualized volatility, and maximum drawdown.
+- Local run storage with session/run isolation and JSONL tool-call records.
+- A controlled Tool Registry with schema validation, reference checks, and budget checks.
+- Static chart generation, Markdown report generation, and deterministic demo scenarios.
+
+The real model-driven Agent loop and UI are not implemented yet. Demo mode is deterministic and does not call a model API.
 
 ## Development setup
 
@@ -14,6 +21,14 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 .\.venv\Scripts\python.exe -m pytest
 ```
+
+## Run a local demo
+
+```powershell
+.\.venv\Scripts\python.exe -m quantlab_agent.cli demo --scenario all --runs-dir runs
+```
+
+The command writes run manifests, tool-call logs, charts, and reports under `runs/`.
 
 ## Documentation
 

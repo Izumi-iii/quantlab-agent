@@ -68,6 +68,7 @@ class AnalysisService:
         requested_start: date,
         requested_end: date,
         requested_metrics: tuple[MetricName, ...],
+        analysis_id: str | None = None,
     ) -> PreparedAnalysis:
         if not 1 <= len(datasets) <= 2:
             raise QuantLabError(
@@ -185,7 +186,7 @@ class AnalysisService:
         effective_end = min(series.index.max().date() for series in sliced.values())
 
         spec = AnalysisSpec(
-            analysis_id=str(uuid4()),
+            analysis_id=analysis_id or str(uuid4()),
             session_id=session_id,
             dataset_ids=tuple(dataset.manifest.dataset_id for dataset in datasets),
             asset_ids=tuple(asset_ids),
