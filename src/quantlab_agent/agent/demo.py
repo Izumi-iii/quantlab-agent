@@ -170,7 +170,17 @@ class DemoController:
         return result.dataset.manifest.dataset_id
 
     def _execute_pipeline(
-        self, *, run_id: str, session_id: str, dataset_ids: list[str]
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        dataset_ids: list[str],
+        requested_start: str = "2024-01-02",
+        requested_end: str = "2024-01-15",
+        requested_metrics: tuple[str, ...] = (
+            MetricName.PERIOD_RETURN.value,
+            MetricName.MAX_DRAWDOWN.value,
+        ),
     ) -> list[ToolResultEnvelope]:
         envelopes: list[ToolResultEnvelope] = []
 
@@ -189,12 +199,9 @@ class DemoController:
             tool_name="prepare_analysis",
             arguments={
                 "dataset_ids": dataset_ids,
-                "requested_start": "2024-01-02",
-                "requested_end": "2024-01-15",
-                "requested_metrics": [
-                    MetricName.PERIOD_RETURN.value,
-                    MetricName.MAX_DRAWDOWN.value,
-                ],
+                "requested_start": requested_start,
+                "requested_end": requested_end,
+                "requested_metrics": list(requested_metrics),
             },
         )
         envelopes.append(env)

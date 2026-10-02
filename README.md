@@ -35,6 +35,8 @@ python -m venv .venv
 
 ## Try the demo
 
+### CLI
+
 ```powershell
 .\.venv\Scripts\python.exe -m quantlab_agent.cli demo --scenario all --runs-dir runs
 ```
@@ -62,6 +64,23 @@ Scenarios:
 | `single-asset`      | DEMO_A only → succeeded.                                          |
 | `duplicate-date`   | INVALID_DUPLICATE.csv → run ends in FAILED, no report written.    |
 
+### Local web UI
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run app.py
+```
+
+Opens a browser at `http://localhost:8501`. The UI is the same deterministic
+pipeline as the CLI demo, but lets you upload your own CSV files, pick a
+date range, choose metrics, and download the generated `report.md`. It uses
+the same `ToolRegistry` and run state machine; the only difference is the
+input source.
+
+**Note**: cancelling in the UI ("Reset UI" button) does not stop an
+already-running background analysis. The cooperative cancellation rule
+(from `PROJECT_PLAN §3.2`) means a click only resets your view; the run
+keeps writing to its own `runs/<session>/runs/<run_id>/` directory.
+
 ## What this project deliberately does NOT do
 
 - Auto trading, stock recommendations, future-return prediction.
@@ -77,6 +96,7 @@ See `Docs/PROJECT_PLAN.md §3.4` for the full non-goals list.
 quantlab-agent/
 ├── pyproject.toml              # build + dev deps + CLI entry point
 ├── README.md
+├── app.py                      # Streamlit UI entry point
 ├── Docs/
 │   ├── PROJECT_PLAN.md         # milestones, status, decisions
 │   ├── architecture.md         # design document
@@ -93,7 +113,7 @@ quantlab-agent/
 │   └── cli.py                  # `quantlab-agent demo` entry point
 └── tests/
     ├── unit/                   # domain + application + adapter + agent unit tests
-    └── integration/            # demo flow + tool pipeline end-to-end tests
+    └── integration/            # demo flow + tool pipeline + UI smoke tests
 ```
 
 ## Run the tests

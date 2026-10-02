@@ -1057,6 +1057,7 @@ runs/<run_id>/
 - [x] 完成 M2：本地 Store、Run 状态、Tool Registry、参数校验、引用归属校验、预算检查和工具调用记录。
 - [x] 完成本地图表、Markdown 报告和确定性演示模式。
 - [x] 增加 CLI 演示入口：`quantlab-agent demo`。
+- [x] 完成 M4：Streamlit 本地 UI；上传 CSV、日期区间、指标选择；调用同一 ToolRegistry；展示指标表、图表 PNG、报告下载、工具调用记录。
 
 ### 19.2 尚未完成
 
@@ -1066,24 +1067,26 @@ runs/<run_id>/
 - [x] 实现工具注册与运行记录。
 - [x] 实现演示模式。
 - [x] 实现本地图表和报告。
-- [ ] 接入真实模型。
-- [ ] 实现 UI。
-- [ ] 执行真实 Agent 评估；当前程序测试和演示模式测试已完成。
-- [ ] 录制演示、整理简历表述。
+- [ ] 接入真实模型（M3）。
+- [x] 实现本地 UI（M4）。
+- [ ] 执行真实 Agent 评估（M5）；当前程序测试和演示模式测试已完成。
+- [ ] 录制演示、整理简历表述（M5）。
 
 ### 19.3 当前验证状态
 
-- 功能代码：已完成 M1 确定性核心、M2 工具层、本地持久化、图表、报告、确定性演示模式和 CLI demo。
+- 功能代码：已完成 M1 确定性核心、M2 工具层、本地持久化、图表、报告、确定性演示模式、CLI demo、M4 Streamlit UI。
 - 依赖安装：已在本地 `.venv` 安装项目开发依赖；尚未建立锁文件。
 - 模型 API：未配置、未调用。
-- 自动化测试：Python 3.14.0 下 79 项通过。
+- 自动化测试：Python 3.14.0 下 84 项通过（包含 M4 UI 烟雾测试）。
 - Agent 评估：真实模型评估未执行；确定性演示模式通过集成测试。
 - 部署：未开展。
 - Git 提交或推送：未执行。
 
 ### 19.4 下一阶段任务
 
-建议下一步执行 UI 或真实 Agent 二选一：
+执行 M3：选定模型服务商后接入 ModelProvider Adapter，在同一 ToolRegistry 上驱动真实工具循环。
+
+M4 已让项目可以本地端到端演示；M3 完成后才能证明 Agent 在自然语言下能选对工具并产出可信报告。M5（评估 + README 完善 + 简历表述）在 M3 完成后做。
 
 - 若优先投开发岗展示完整产品，可先做本地 UI：上传 CSV、选择 demo、展示指标、图表、报告和工具调用记录。
 - 若优先突出 Agent 能力，可先实现 Provider Protocol、Fake Provider 测试和真实模型工具循环；真实模型接入前需要确定服务商、模型和密钥方式。
@@ -1156,6 +1159,18 @@ runs/<run_id>/
 - 新增或修改的决策：工具层不得直接访问 RunStore 私有方法；Run 上下文更新通过 `RunService.update_context_snapshot()` 完成。
 - 下一步：建议优先做 UI，让项目可以面向招聘展示完整操作流程；真实模型接入前需要确定服务商和密钥使用方式。
 - 是否需要用户补充信息：若开始真实模型接入，需要用户确认模型服务商；做本地 UI 暂不需要。
+
+### 2026-10-02：M4 Streamlit 本地 UI
+
+- 本次目标：让项目可以本地端到端演示，上传 CSV、看指标、图表、报告与工具调用记录。
+- 实际完成：在仓库根目录新增 `app.py`；复用 `default_demo_controller()` 组合根，将 `_execute_pipeline` 扩展为接受用户提供的日期区间与指标；新增侧边栏（会话 UUID + Reset UI）、三 Tab 布局（Data & Request / Results / Process）；指标表用 `st.dataframe`、图表用 `st.image`、报告用 `st.download_button`；新增 `tests/integration/test_app_smoke.py` 5 项测试使用 Streamlit `AppTest` 验证渲染与会话状态；`pyproject.toml` 加入 `streamlit>=1.40,<2`；README 与 §19/§20 同步更新。
+- 修改文件：`pyproject.toml`、`app.py`、`src/quantlab_agent/agent/demo.py`、`tests/integration/test_app_smoke.py`、`README.md`、本规划。
+- 验证命令及结果：`.\.venv\Scripts\python.exe -m pytest`，84 项通过；`.\.venv\Scripts\ruff.exe check src tests` 通过；`.\.venv\Scripts\ruff.exe format --check src tests` 通过；`python -m streamlit run app.py` 启动成功监听在 8501 端口。
+- 实际模型与运行模式：未调用真实模型；UI 与 CLI demo 共享同一 ToolRegistry 与 Run 状态机。
+- 失败／未验证事项：UI 取消按钮采用 PROJECT_PLAN §3.2 的合作式取消规则——只重置视图，不杀后台运行；这一行为尚未在自动化测试中显式验证。Streamlit AppTest 模拟文件上传的细节受限于库版本，已用更稳的"按钮可见性 + 会话 UUID"测试代替。
+- 新增或修改的决策：UI 不另起一套工具调用——直接复用 `DemoController._execute_pipeline`，把日期与指标作为参数传入；保持"演示 / UI 走同一管线"原则。
+- 下一步：M3 真实模型接入，或先做 M5 的 README/简历收尾。
+- 是否需要用户补充信息：M3 需要确定服务商与密钥方式；M5 不需要。
 
 ## 21. 参考依据与使用限制
 
