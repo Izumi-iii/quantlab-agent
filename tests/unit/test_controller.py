@@ -198,3 +198,58 @@ def test_controller_marks_failed_on_model_error(tmp_path: Path) -> None:
     assert final.failure is not None
     assert final.failure["code"] == "MODEL_ERROR"
     assert "rate limited" in final.failure["message"]
+
+
+def test_controller_surfaces_protocol_error_and_lets_model_retry(
+    tmp_path: Path,
+) -> None:
+    """When the model submits an invalid tool argument (e.g. asset_id
+    instead of UUID dataset_id), the schema validator returns
+    PROTOCOL_ERROR. The controller must surface this to the model via
+    the tool-result message so the model can retry — not crash, not
+    fabricate data, not abort the run.
+    """
+    registry, run_service = _build_stack(tmp_path)
+    run = _seed_run(run_service)
+    scripted = FakeProvider(
+        [
+            ModelTurn(
+                tool_call=ToolCall(
+                    id="call_bad",
+                    name="inspect_dataset",
+                    # "DEMO_A" is a 6-char asset_id, NOT a 36-char UUID;
+                    # the schema validator must reject this.
+                    arguments=json.dumps({"dataset_id": "DEMO_A"}),
+                ),
+                finish_reason="tool_calls",
+            ),
+            ModelTurn(text="Sorry, will retry with the UUID.", finish_reason="stop"),
+        ],
+        echo_calls=True,
+    )
+    controller = AgentController(
+        model_provider=scripted,
+        run_service=run_service,
+        tool_registry=registry,
+    )
+    final = controller.execute(
+        run_id=run.run_id,
+        session_id=SESSION,
+        user_request="inspect DEMO_A",
+    )
+    # Controller finished cleanly because the model recovered after
+    # seeing the protocol error.
+    assert final.status.value == "succeeded"
+
+    # The bad call is persisted in tool_calls.jsonl as failed.
+    records = run_service.list_tool_calls(run.run_id, SESSION)
+    assert len(records) == 1
+    assert records[0].status.value == "failed"
+    assert records[0].error_code == "PROTOCOL_ERROR"
+    # Both model turns were issued.
+    assert len(scripted.calls) == 2
+    second_messages = scripted.calls[1]["messages"]
+    assert any(
+        msg.get("role") == "tool" and msg.get("tool_call_id") == "call_bad"
+        for msg in second_messages
+    )

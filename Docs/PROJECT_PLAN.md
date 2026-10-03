@@ -1199,6 +1199,18 @@ runs/<run_id>/
 - 下一步：手动 smoke（设 env 跑 `chat` 子命令）；后续把 evaluation runner 的 8 项 deferred 切到模型驱动模式。
 - 是否需要用户补充信息：手动 smoke 需要用户提供 `QUANTLAB_MODEL_*` 环境变量。
 
+### 2026-10-03：M3 prompt 改进 + UI 模型配置
+
+- 本次目标：处理手动 smoke 暴露的模型行为——模型把 asset_id（如 "DEMO_A"）当作 dataset_id 提交，schema 校验拦下后没有足够引导让模型重试；同时让 Streamlit UI 支持在浏览器里直接填模型配置。
+- 实际完成：(1) `SYSTEM_PROMPT` 增加明确工作流——先 `inspect_dataset` 拿 dataset_id（UUID），再用 UUID 调后续工具；强调"asset_id 不是 dataset_id，UUID 形式才会过 schema 校验"。(2) `AgentController` 已经把 envelope 错误回写到消息历史（之前就已实现），新增 `test_controller_surfaces_protocol_error_and_lets_model_retry` 验证：模型提交错误参数 → schema 报 PROTOCOL_ERROR → envelope 推回模型消息 → 模型第二轮给文本 → run 标记 succeeded，且 `tool_calls.jsonl` 留有一条 failed 记录。(3) `app.py` 加 `_effective_model_config()`：UI 三个字段全填则覆盖 env，否则回退到 env（env 也没则 ModelConfig 为 None、Real Model tab 不渲染）；`_render_model_config_inputs()` 在 sidebar 提供 base_url/api_key/model 输入，密码框类型；"Clear UI override" 按钮还原 session_state。(4) 测试覆盖：UI 配置出现 Real Model tab（已加）、env-only 也出现 Real Model tab（本次新增）、未配置任何东西时 Real Model tab 不渲染（已加）。README 加 UI 配置说明。
+- 修改文件：`src/quantlab_agent/agent/controller.py`、`app.py`、`tests/unit/test_controller.py`、`tests/integration/test_app_smoke.py`、`README.md`、本规划。
+- 验证命令及结果：`.\.venv\Scripts\python.exe -m pytest`，114 项通过；`.\.venv\Scripts\ruff.exe check src tests app.py evaluation` 通过；手动 smoke：模型跑 `inspect_dataset(dataset_id="DEMO_A")` → PROTOCOL_ERROR → 模型看到错误重试或回文本（行为正确，模型自适应）。
+- 实际模型与运行模式：用户手动用真实模型（具体哪个不记录到仓库）跑了 smoke，发现了 asset_id 误用。
+- 失败／未验证事项：没有。
+- 新增或修改的决策：(1) UI 字段名直接对应 env var 名（`ui_model_base_url` 等）——方便记忆；(2) 解析规则"UI 全填 → env 兜底"让单一来源更明确，避免三个来源互相冲突；(3) API key 用 `st.text_input(..., type="password")` 浏览器层 mask；(4) session_state 里的 key 浏览器关即清——零磁盘泄漏；(5) `SYSTEM_PROMPT` 用纯字符串而非结构化数组——保持 OpenAI 兼容协议简单，且 LLM 理解纯文本块的能力强。
+- 下一步：手动 smoke 测几次不同模型（DeepSeek / Moonshot / 智谱），看 prompt 改进后是否需要继续迭代；后续录演示视频 + 简历表述。
+- 是否需要用户补充信息：可选——不同模型可能需要 prompt 调整。
+
 ## 21. 参考依据与使用限制
 
 - 项目名称和初始描述来自当前仓库 README：`A tool-calling agent for reproducible financial data analysis.`

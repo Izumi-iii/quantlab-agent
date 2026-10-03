@@ -144,6 +144,27 @@ def test_real_model_tab_hidden_without_config(redirected_runs_dir: Path) -> None
     assert "Real Model" not in tab_labels
 
 
+def test_real_model_tab_hidden_when_only_env_configured(
+    redirected_runs_dir: Path, monkeypatch
+) -> None:
+    """With QUANTLAB_MODEL_* env vars set, the Real Model tab must
+    still appear (env falls through to ``_effective_model_config``).
+    """
+    monkeypatch.setenv("QUANTLAB_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("QUANTLAB_MODEL_API_KEY", "sk-env")
+    monkeypatch.setenv("QUANTLAB_MODEL_NAME", "env-model")
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_file(str(APP_PATH), default_timeout=30)
+    at.run()
+
+    tab_labels = [t.label for t in at.tabs]
+    assert "Real Model" in tab_labels
+    # Caption should reflect env values.
+    captions = [c.value for c in at.caption]
+    assert any("env-model" in c for c in captions)
+
+
 def test_run_service_exposes_list_tool_calls() -> None:
     """Regression test: the Process tab in the UI calls
     ``controller._runs.list_tool_calls(...)``. The method must be exposed
