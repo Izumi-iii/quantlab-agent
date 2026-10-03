@@ -62,7 +62,11 @@ def _normalize_csv(imported: ImportedDataset) -> bytes:
 def _atomic_write_bytes(target: Path, payload: bytes) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(target.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+    # ``os.O_BINARY`` is a no-op on POSIX but required on Windows under
+    # Python 3.14+, where ``os.open`` defaults to text mode and silently
+    # rewrites every LF to CRLF — which corrupts binary formats like PNG.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_BINARY
+    fd = os.open(tmp, flags)
     try:
         os.write(fd, payload)
         os.fsync(fd)

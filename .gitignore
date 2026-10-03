@@ -219,3 +219,7 @@ __marimo__/
 
 # QuantLab Agent runtime artifacts
 runs/
+demo_output/
+
+# Claude Code session data
+.claude/

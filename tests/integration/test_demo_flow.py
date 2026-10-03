@@ -62,3 +62,29 @@ def test_run_all_produces_three_runs(tmp_path: Path) -> None:
     assert len(runs) == 3
     statuses = sorted(r.status.value for r in runs)
     assert statuses == ["failed", "succeeded", "succeeded"]
+
+
+def test_succeeded_run_exposes_tool_call_log(tmp_path: Path) -> None:
+    """End-to-end: after a successful demo run, ``RunService.list_tool_calls``
+    must return the persisted tool-call records. This is what the UI's
+    Process tab reads; if the method is missing or the records don't
+    reach disk, the tab crashes.
+    """
+    demo = default_demo_controller(tmp_path)
+    run = demo.run_two_asset(session_id=SESSION)
+    assert run.status.value == "succeeded"
+
+    records = demo._runs.list_tool_calls(run.run_id, SESSION)
+    tool_names = [r.tool_name for r in records]
+    assert tool_names == [
+        "inspect_dataset",
+        "inspect_dataset",
+        "prepare_analysis",
+        "compute_metrics",
+        "create_charts",
+        "build_report",
+    ]
+    for record in records:
+        assert record.status.value == "succeeded"
+        assert record.started_at is not None
+        assert record.completed_at is not None

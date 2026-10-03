@@ -149,10 +149,9 @@ def _import_user_datasets(
                 f"- **{issue.code}**: {issue.message}" for issue in result.quality_report.issues
             ]
             return None, (
-                f"Dataset `{meta.asset_id}` was rejected by the quality gate:\n"
-                + "\n".join(issues)
+                f"Dataset `{meta.asset_id}` was rejected by the quality gate:\n" + "\n".join(issues)
             )
-        controller._dataset_store.save(result.dataset, session_id)
+        controller.dataset_store.save(result.dataset, session_id)
         dataset_ids.append(result.dataset.manifest.dataset_id)
     return dataset_ids, None
 
@@ -206,7 +205,7 @@ def _recompute_metric_rows(controller: DemoController, run: Run) -> pd.DataFrame
 
     from quantlab_agent.application.analyses import AnalysisService
 
-    datasets = [controller._dataset_store.get(ds_id, run.session_id) for ds_id in run.dataset_ids]
+    datasets = [controller.dataset_store.get(ds_id, run.session_id) for ds_id in run.dataset_ids]
     metrics = tuple(MetricName(m) for m in run.context_snapshot["requested_metrics"])
     prepared = AnalysisService().prepare(
         datasets,
@@ -260,7 +259,7 @@ def _render_results(controller: DemoController, run: Run) -> None:
 
     if run.chart_ids:
         st.markdown("### Charts")
-        chart_store = controller._chart_store
+        chart_store = controller.chart_store
         for chart_id in run.chart_ids:
             chart = chart_store.get(chart_id, run.session_id, run.run_id)
             png_path = chart_store.get_png_path(chart_id, run.session_id, run.run_id)
@@ -268,7 +267,7 @@ def _render_results(controller: DemoController, run: Run) -> None:
 
     if run.report_id:
         st.markdown("### Report")
-        md_path = controller._report_store.get_markdown_path(
+        md_path = controller.report_store.get_markdown_path(
             run.report_id, run.session_id, run.run_id
         )
         markdown = Path(md_path).read_text(encoding="utf-8")

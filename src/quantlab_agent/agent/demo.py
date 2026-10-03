@@ -43,12 +43,18 @@ class DemoController:
         run_service: RunService,
         dataset_service: DatasetService,
         dataset_store: LocalDatasetStore | None = None,
+        chart_store: LocalChartStore | None = None,
+        report_store: LocalReportStore | None = None,
     ) -> None:
         self._runs_dir = runs_dir
         self._registry = registry
         self._runs = run_service
         self._datasets = dataset_service
-        self._dataset_store = dataset_store or LocalDatasetStore(runs_dir)
+        # Public attributes so the UI can read artifacts produced by the
+        # tool pipeline (chart PNGs, report markdown).
+        self.dataset_store = dataset_store or LocalDatasetStore(runs_dir)
+        self.chart_store = chart_store or LocalChartStore(runs_dir)
+        self.report_store = report_store or LocalReportStore(runs_dir)
 
     # -- scenarios ---------------------------------------------------------
 
@@ -166,7 +172,7 @@ class DemoController:
             path.read_bytes(), metadata=metadata, session_id=session_id
         )
         assert result.dataset is not None, f"Demo scenario requires a clean dataset: {filename}"
-        self._dataset_store.save(result.dataset, session_id)
+        self.dataset_store.save(result.dataset, session_id)
         return result.dataset.manifest.dataset_id
 
     def _execute_pipeline(
@@ -283,6 +289,9 @@ def default_demo_controller(runs_dir: Path) -> DemoController:
         registry=registry,
         run_service=run_service,
         dataset_service=dataset_service,
+        dataset_store=dataset_store,
+        chart_store=chart_store,
+        report_store=report_store,
     )
 
 

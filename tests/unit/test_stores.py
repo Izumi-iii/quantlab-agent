@@ -150,6 +150,28 @@ def test_atomic_write_no_tmp_left(tmp_path: Path) -> None:
     assert leftovers == []
 
 
+def test_atomic_write_preserves_binary_payload(tmp_path: Path) -> None:
+    """Under Python 3.14 on Windows, ``os.open`` defaults to text mode and
+    silently rewrites every LF to CRLF — which corrupts binary formats
+    like PNG. ``_atomic_write_bytes`` must explicitly pass ``os.O_BINARY``
+    so payloads reach disk byte-for-byte unchanged.
+    """
+    from quantlab_agent.adapters.local_stores import _atomic_write_bytes
+
+    target = tmp_path / "binary.bin"
+    # Standard PNG signature + a chunk with several LF bytes inside it.
+    payload = b"\x89PNG\r\n\x1a\n" + b"\x00\x01\x02\n\x03\nrest\n"
+
+    _atomic_write_bytes(target, payload)
+
+    on_disk = target.read_bytes()
+    assert on_disk == payload, (
+        f"_atomic_write_bytes corrupted the payload:\n"
+        f"  in : {payload[:16]!r}\n"
+        f"  out: {on_disk[:16]!r}"
+    )
+
+
 # --- run store ------------------------------------------------------------
 
 

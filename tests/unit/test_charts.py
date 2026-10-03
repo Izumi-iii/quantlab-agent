@@ -184,3 +184,40 @@ def test_chart_data_sha256_matches_payload(tmp_path: Path) -> None:
     payload = json.loads(Path(data_path).read_text(encoding="utf-8"))
     expected = sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
     assert artifacts[0].data_sha256 == expected
+
+
+def test_png_files_match_matplotlib_output(tmp_path: Path) -> None:
+    """Regression test: PNGs written through ``LocalChartStore`` must reach
+    disk byte-identical to what matplotlib produced.
+
+    Under Python 3.14 on Windows, ``os.open`` defaults to text mode and
+    silently rewrites every LF to CRLF — which corrupts PNG signatures
+    (10 bytes instead of 8) and makes the file unreadable by strict
+    parsers (Pillow, Streamlit's ``st.image``). ``_atomic_write_bytes``
+    must explicitly pass ``os.O_BINARY``.
+    """
+    from io import BytesIO
+
+    from PIL import Image
+
+    runs = _seed_run(tmp_path)
+    runs.bind_analysis(RUN_ID, SESSION, ANALYSIS_ID)
+    svc = _service(tmp_path, runs)
+
+    artifacts = svc.create_charts(
+        run_id=RUN_ID,
+        session_id=SESSION,
+        analysis=_prepared(),
+        kinds=(ChartKind.NORMALIZED_PRICES, ChartKind.DRAWDOWN),
+    )
+
+    chart_store = LocalChartStore(tmp_path)
+    for artifact in artifacts:
+        png_path = chart_store.get_png_path(artifact.chart_id, SESSION, RUN_ID)
+        data = Path(png_path).read_bytes()
+        # Standard 8-byte PNG signature, no extra CRs inserted.
+        assert data[:8] == b"\x89PNG\r\n\x1a\n", (
+            f"PNG at {png_path} has wrong signature: {data[:10]!r}"
+        )
+        # Pillow must accept the file without ``UnidentifiedImageError``.
+        Image.open(BytesIO(data)).verify()

@@ -24,6 +24,7 @@ from quantlab_agent.domain.models import (
     RunCounters,
     RunMode,
     RunStatus,
+    ToolCallRecord,
 )
 from quantlab_agent.domain.policies import DEFAULT_RUN_BUDGET
 from quantlab_agent.ports.stores import RunStore
@@ -77,6 +78,10 @@ class RunService:
 
     def get_run(self, run_id: str, session_id: str) -> Run:
         return self._runs.get(run_id, session_id)
+
+    def list_tool_calls(self, run_id: str, session_id: str) -> tuple[ToolCallRecord, ...]:
+        """Return the persisted tool-call records for a run (audit log)."""
+        return self._runs.list_tool_calls(run_id, session_id)
 
     def assert_can_accept_tool_call(self, run_id: str, session_id: str) -> Run:
         run = self._runs.get(run_id, session_id)

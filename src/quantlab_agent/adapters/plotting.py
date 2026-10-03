@@ -92,6 +92,10 @@ class PlotService:
         if not png_bytes.startswith(_PNG_MAGIC):
             raise RuntimeError("Generated image is not a valid PNG.")
         buf.close()
+        # Note: matplotlib on Windows writes correct PNG bytes; the
+        # ``_atomic_write_bytes`` helper in ``adapters.local_stores`` is
+        # responsible for opening the file in O_BINARY mode so those bytes
+        # reach disk intact.
 
         data_payload: dict[str, Any] = {
             "axes": {"x": "date", "y": value_label},
