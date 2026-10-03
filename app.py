@@ -43,6 +43,66 @@ def _ensure_session_state() -> str:
     return st.session_state.session_uuid
 
 
+def _effective_model_config() -> ModelConfig | None:
+    """Resolve the active ``ModelConfig``: UI override (if all three fields
+    are filled) takes precedence over env vars.
+
+    The session-scoped UI values are stored as plain strings in
+    ``st.session_state``; the API key is kept in the per-browser session
+    only and never written to disk.
+    """
+    env_config = load_config().model
+    ui_base = (st.session_state.get("ui_model_base_url") or "").strip()
+    ui_key = (st.session_state.get("ui_model_api_key") or "").strip()
+    ui_model = (st.session_state.get("ui_model_name") or "").strip()
+    if ui_base and ui_key and ui_model:
+        return ModelConfig(
+            base_url=ui_base,
+            api_key=ui_key,
+            model=ui_model,
+            timeout_seconds=env_config.timeout_seconds,
+            temperature=env_config.temperature,
+            max_tokens=env_config.max_tokens,
+        )
+    if env_config.configured:
+        return env_config
+    return None
+
+
+def _render_model_config_inputs() -> None:
+    """Sidebar inputs for ``base_url`` / ``api_key`` / ``model``.
+
+    Env vars are used by default; filling all three fields here
+    overrides them for the current browser session.
+    """
+    st.markdown("### Model configuration")
+    env_config = load_config().model
+    if env_config.configured:
+        st.caption(f"Env default: `{env_config.base_url}` · model `{env_config.model}`")
+    st.text_input(
+        "base_url",
+        key="ui_model_base_url",
+        placeholder="https://api.openai.com/v1",
+        help="Leave empty to use QUANTLAB_MODEL_BASE_URL from env.",
+    )
+    st.text_input(
+        "api_key",
+        key="ui_model_api_key",
+        type="password",
+        help="Leave empty to use QUANTLAB_MODEL_API_KEY from env.",
+    )
+    st.text_input(
+        "model",
+        key="ui_model_name",
+        placeholder="gpt-4o-mini",
+        help="Leave empty to use QUANTLAB_MODEL_NAME from env.",
+    )
+    if st.button("Clear UI override", help="Revert to env-var defaults."):
+        for key in ("ui_model_base_url", "ui_model_api_key", "ui_model_name"):
+            st.session_state.pop(key, None)
+        st.rerun()
+
+
 def _render_sidebar(session_id: str) -> None:
     with st.sidebar:
         st.markdown("### Session")
@@ -50,6 +110,8 @@ def _render_sidebar(session_id: str) -> None:
         if st.session_state.get("active_run_id"):
             st.markdown("### Active run")
             st.code(st.session_state.active_run_id, language="text")
+        st.divider()
+        _render_model_config_inputs()
         st.divider()
         if st.button("Reset UI", help="Clear current view. Background runs keep their state."):
             for key in ("active_run_id", "last_run"):
@@ -363,9 +425,10 @@ def main() -> None:
     controller = _build_controller(str(RUNS_DIR))
     _render_sidebar(session_id)
 
-    # Real-mode tab is only available when model env vars are configured.
-    config = load_config()
-    if config.model.configured:
+    # The Real Model tab is shown whenever a ModelConfig resolves —
+    # either from env vars or from the sidebar's UI inputs.
+    effective_model = _effective_model_config()
+    if effective_model is not None:
         tab_labels = ["Data & Request", "Real Model", "Results", "Process"]
     else:
         tab_labels = ["Data & Request", "Results", "Process"]
@@ -396,9 +459,10 @@ def main() -> None:
 
     if tab_real is not None:
         with tab_real:
+            assert effective_model is not None
             st.subheader("Real Model")
-            st.caption(f"Provider: `{config.model.base_url}` · Model: `{config.model.model}`")
-            _render_real_mode(session_id, config.model)
+            st.caption(f"Provider: `{effective_model.base_url}` · Model: `{effective_model.model}`")
+            _render_real_mode(session_id, effective_model)
 
     last_run: Run | None = st.session_state.get("last_run")
     with tab_results:

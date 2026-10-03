@@ -115,6 +115,35 @@ def test_demo_controller_exposes_all_stores() -> None:
         assert getattr(controller, attr) is not None
 
 
+def test_real_model_tab_appears_when_configured(redirected_runs_dir: Path) -> None:
+    """The Real Model tab must show up when any ModelConfig resolves —
+    either env-var based or via the sidebar's UI inputs."""
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_file(str(APP_PATH), default_timeout=30)
+    at.session_state["ui_model_base_url"] = "https://api.example.com/v1"
+    at.session_state["ui_model_api_key"] = "sk-ui-test"
+    at.session_state["ui_model_name"] = "example-model"
+    at.run()
+
+    assert not at.exception, f"App raised: {at.exception}"
+    tab_labels = [t.label for t in at.tabs]
+    assert "Real Model" in tab_labels
+
+
+def test_real_model_tab_hidden_without_config(redirected_runs_dir: Path) -> None:
+    """If neither env vars nor UI inputs are set, the Real Model tab
+    must not be rendered (otherwise the user sees an empty form).
+    """
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_file(str(APP_PATH), default_timeout=30)
+    at.run()
+
+    tab_labels = [t.label for t in at.tabs]
+    assert "Real Model" not in tab_labels
+
+
 def test_run_service_exposes_list_tool_calls() -> None:
     """Regression test: the Process tab in the UI calls
     ``controller._runs.list_tool_calls(...)``. The method must be exposed

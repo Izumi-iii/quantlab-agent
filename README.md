@@ -98,6 +98,13 @@ When the three `QUANTLAB_MODEL_*` env vars are set, a fourth tab
 **Send to model**, and the same `AgentController` that powers `chat`
 drives the run from your browser.
 
+You can also configure the model from inside the UI — the sidebar
+has a **Model configuration** section with `base_url`, `api_key`, and
+`model` inputs. Filling all three fields there overrides the env
+vars for the current browser session only; the API key is held in
+`st.session_state` and never written to disk. Use **Clear UI override**
+to fall back to env vars.
+
 **Note**: cancelling in the UI ("Reset UI" button) does not stop an
 already-running background analysis. The cooperative cancellation rule
 (from `PROJECT_PLAN §3.2`) means a click only resets your view; the run
