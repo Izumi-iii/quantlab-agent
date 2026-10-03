@@ -423,6 +423,10 @@ class ToolRegistry:
     def names(self) -> tuple[str, ...]:
         return tuple(self._tools.keys())
 
+    def definitions(self) -> tuple[ToolDefinition, ...]:
+        """Return all registered tool definitions (read-only view)."""
+        return tuple(self._tools.values())
+
     def get(self, name: str) -> ToolDefinition:
         if name not in self._tools:
             raise QuantLabError(

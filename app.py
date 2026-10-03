@@ -17,6 +17,7 @@ import pandas as pd
 import streamlit as st
 
 from quantlab_agent.agent.demo import DemoController, default_demo_controller
+from quantlab_agent.config import ModelConfig, load_config
 from quantlab_agent.domain.models import (
     DatasetMetadata,
     MetricName,
@@ -281,6 +282,48 @@ def _render_results(controller: DemoController, run: Run) -> None:
             st.markdown(markdown)
 
 
+def _render_real_mode(session_id: str, model_config: ModelConfig) -> None:
+    """Render the Real Model tab: a chat-style interface that drives the
+    AgentController with the user's natural-language request.
+    """
+    user_request = st.text_area(
+        "Natural-language request",
+        placeholder=(
+            "e.g. Compare DEMO_A and DEMO_B for January 2024 and tell me "
+            "which one had the worse drawdown."
+        ),
+        height=120,
+    )
+    submitted = st.button(
+        "Send to model",
+        type="primary",
+        disabled=st.session_state.get("running_real", False),
+        use_container_width=True,
+    )
+    if submitted and user_request.strip() and not st.session_state.get("running_real", False):
+        from quantlab_agent.agent.controller import build_real_agent_stack
+
+        st.session_state.running_real = True
+        try:
+            with st.spinner("Driving AgentController…"):
+                controller = build_real_agent_stack(RUNS_DIR, model_config)
+                run = controller.run_service.create_run(
+                    session_id=session_id,
+                    mode=RunMode.REAL_AGENT,
+                    user_request=user_request,
+                )
+                final = controller.execute(
+                    run_id=run.run_id,
+                    session_id=session_id,
+                    user_request=user_request,
+                )
+            st.session_state.last_run = final
+            st.session_state.active_run_id = final.run_id
+        finally:
+            st.session_state.running_real = False
+        st.rerun()
+
+
 def _render_process(controller: DemoController, run: Run) -> None:
     st.subheader("Tool calls")
     records = controller._runs.list_tool_calls(run.run_id, run.session_id)
@@ -320,7 +363,17 @@ def main() -> None:
     controller = _build_controller(str(RUNS_DIR))
     _render_sidebar(session_id)
 
-    tab_data, tab_results, tab_process = st.tabs(["Data & Request", "Results", "Process"])
+    # Real-mode tab is only available when model env vars are configured.
+    config = load_config()
+    if config.model.configured:
+        tab_labels = ["Data & Request", "Real Model", "Results", "Process"]
+    else:
+        tab_labels = ["Data & Request", "Results", "Process"]
+    tabs = st.tabs(tab_labels)
+    tab_data = tabs[0]
+    tab_real = tabs[1] if len(tabs) == 4 else None
+    tab_results = tabs[-2] if len(tabs) == 4 else tabs[1]
+    tab_process = tabs[-1]
 
     with tab_data:
         files, metas, start, end, metrics = _render_data_form()
@@ -340,6 +393,12 @@ def main() -> None:
             finally:
                 st.session_state.running = False
             st.rerun()
+
+    if tab_real is not None:
+        with tab_real:
+            st.subheader("Real Model")
+            st.caption(f"Provider: `{config.model.base_url}` · Model: `{config.model.model}`")
+            _render_real_mode(session_id, config.model)
 
     last_run: Run | None = st.session_state.get("last_run")
     with tab_results:

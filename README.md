@@ -64,6 +64,23 @@ Scenarios:
 | `single-asset`      | DEMO_A only → succeeded.                                          |
 | `duplicate-date`   | INVALID_DUPLICATE.csv → run ends in FAILED, no report written.    |
 
+### Real-model chat (M3)
+
+```powershell
+set QUANTLAB_MODEL_BASE_URL=https://api.deepseek.com/v1
+set QUANTLAB_MODEL_API_KEY=sk-...
+set QUANTLAB_MODEL_NAME=deepseek-chat
+
+.\.venv\Scripts\python.exe -m quantlab_agent.cli chat "compare DEMO_A and DEMO_B for January 2024"
+```
+
+Any OpenAI-compatible endpoint works — OpenAI, DeepSeek, Moonshot/Kimi,
+Zhipu/GLM, Volcengine/Doubao, Alibaba/Qwen, Baidu/Qianfan. Configure the
+three env vars above (optionally `QUANTLAB_MODEL_TIMEOUT`,
+`QUANTLAB_MODEL_TEMPERATURE`, `QUANTLAB_MODEL_MAX_TOKENS`) and run any
+subcommand. No new dependency is added — `urllib` from the standard
+library handles HTTP.
+
 ### Local web UI
 
 ```powershell
@@ -75,6 +92,11 @@ pipeline as the CLI demo, but lets you upload your own CSV files, pick a
 date range, choose metrics, and download the generated `report.md`. It uses
 the same `ToolRegistry` and run state machine; the only difference is the
 input source.
+
+When the three `QUANTLAB_MODEL_*` env vars are set, a fourth tab
+**"Real Model"** appears. Type a natural-language request, click
+**Send to model**, and the same `AgentController` that powers `chat`
+drives the run from your browser.
 
 **Note**: cancelling in the UI ("Reset UI" button) does not stop an
 already-running background analysis. The cooperative cancellation rule

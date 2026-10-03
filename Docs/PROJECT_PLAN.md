@@ -1059,6 +1059,7 @@ runs/<run_id>/
 - [x] 增加 CLI 演示入口：`quantlab-agent demo`。
 - [x] 完成 M4：Streamlit 本地 UI；上传 CSV、日期区间、指标选择；调用同一 ToolRegistry；展示指标表、图表 PNG、报告下载、工具调用记录。
 - [x] 完成 M5 评估集：E01–E24 中 16 项可本地验证、8 项标记 deferred 待 M3。
+- [x] 完成 M3：OpenAI-compatible ModelProvider Adapter + AgentController 主循环 + CLI `chat` 子命令 + Streamlit Real Model tab。用户只需配置 `QUANTLAB_MODEL_BASE_URL` / `QUANTLAB_MODEL_API_KEY` / `QUANTLAB_MODEL_NAME` 即可接入 OpenAI / DeepSeek / Moonshot / 智谱 / 豆包 / 通义千问 / 百度千帆 等所有 OpenAI 兼容端点。
 
 ### 19.2 尚未完成
 
@@ -1070,24 +1071,25 @@ runs/<run_id>/
 - [x] 实现本地图表和报告。
 - [x] 实现本地 UI（M4）。
 - [x] 准备 E01–E24 评估集（M5）。
-- [ ] 接入真实模型（M3）后才能跑完剩余 8 项评估。
+- [x] 实现真实模型适配器（M3）。
+- [ ] 把 8 项 deferred 评估用例切到模型驱动模式并跑通。
 - [ ] 录制演示、整理简历表述。
 
 ### 19.3 当前验证状态
 
-- 功能代码：已完成 M1 确定性核心、M2 工具层、本地持久化、图表、报告、确定性演示模式、CLI demo、M4 Streamlit UI、M5 评估集。
-- 依赖安装：已在本地 `.venv` 安装项目开发依赖；尚未建立锁文件。
-- 模型 API：未配置、未调用。
-- 自动化测试：Python 3.14.0 下 98 项通过（包含 M4 UI 烟雾测试 + 8 项评估 runner 测试）。
-- Agent 评估：本地可验证 16 项全过；8 项 deferred 待 M3。
+- 功能代码：M1 确定性核心、M2 工具层与持久化、M4 Streamlit UI、M5 评估集、M3 真实模型适配器全部完成。
+- 依赖安装：已在本地 `.venv` 安装项目开发依赖；尚未建立锁文件。M3 不引入新依赖（用 stdlib `urllib`）。
+- 模型 API：可选用。配置三个 `QUANTLAB_MODEL_*` 环境变量即可启用；未配置时跑 demo 模式。
+- 自动化测试：Python 3.14.0 下 110 项通过。
+- Agent 评估：本地可验证 16 项全过；8 项 deferred（E11/E12/E16/E17/E20/E21/E23/E24）——配置模型后可手动驱动。
 - 部署：未开展。
 - Git 提交或推送：未执行。
 
 ### 19.4 下一阶段任务
 
-执行 M3：选定模型服务商后接入 ModelProvider Adapter。同一 ToolRegistry 与同一评估 runner 复用——只把 deferred 8 项的 `mode` 改成真实模型驱动即可。
-
-M3 完成后，M5 的剩余工作只剩：录制演示视频与整理简历表述。
+1. （可选）手动跑 `python -m evaluation.runner` 同时带上模型配置，把 8 项 deferred 跑通，把结果贴进 PROJECT_PLAN §20。
+2. 录制 2–3 分钟演示视频：CLI demo → UI 上传 CSV 跑真实场景 → UI Real Model tab 用真模型聊天 → `evaluation.runner` 输出 16+8 项表格。
+3. 简历表述打磨：把"M1 拆确定性 → M2 工具链 → M4 UI → M5 评估 → M3 真实模型" 这条线写进项目说明。
 
 - 若优先投开发岗展示完整产品，可先做本地 UI：上传 CSV、选择 demo、展示指标、图表、报告和工具调用记录。
 - 若优先突出 Agent 能力，可先实现 Provider Protocol、Fake Provider 测试和真实模型工具循环；真实模型接入前需要确定服务商、模型和密钥方式。
@@ -1184,6 +1186,18 @@ M3 完成后，M5 的剩余工作只剩：录制演示视频与整理简历表�
 - 新增或修改的决策：(1) `evaluation/` 不放 `src/` 下——它是"项目级"工具而非应用代码；通过 pyproject 包发现机制让 `python -m evaluation.runner` 可执行且可被 pytest import。(2) 评估用例用 JSONL 而不是 YAML——JSON 在 Python 标准库里就直接 parse，没多余依赖。(3) deferred 用 `deferred_reason` 显式标注而不是默默 skip——便于以后接 M3 时能精确知道每项缺什么。
 - 下一步：M3 真实模型接入（仅 8 项 deferred 等它）；剩余 M5 工作只剩录制演示视频与简历表述。
 - 是否需要用户补充信息：M3 需要服务商与密钥方式。
+
+### 2026-10-03：M3 真实模型接入（OpenAI-compatible）
+
+- 本次目标：让项目能接任意 OpenAI-兼容 LLM——OpenAI / DeepSeek / Moonshot / 智谱 / 豆包 / 通义千问 / 百度千帆等只需换 base_url + api_key + model。
+- 实际完成：新增 `ports/model_provider.py`（`ModelProvider` Protocol、`ModelTurn`、`ToolCall`、`ModelProviderError`）；新增 `adapters/openai_compatible.py`（std `urllib` HTTP、bearer auth、tool_calls 解析、HTTPError 抛 provider error、网络/超时错误转 envelope error）；新增 `adapters/fake_provider.py`（离线测试用，脚本化 ModelTurn 列表）；新增 `agent/tool_format.py`（Pydantic JSON Schema → OpenAI tool schema，去除 `$schema` / `title`，强制 `additionalProperties: false`）；新增 `agent/controller.py`（`AgentController` 主循环、`SYSTEM_PROMPT`、工具结果消息追加、文本 → mark_succeeded、tool_call → registry.execute、error → mark_failed、预算耗尽 → BUDGET_EXCEEDED；导出 `build_real_agent_stack()` 给 CLI/UI 复用）；CLI 加 `quantlab-agent chat <request>` 子命令，未设 `QUANTLAB_MODEL_*` 时清晰报错并给出示例；Streamlit UI 加 "Real Model" tab（仅在 `QUANTLAB_MODEL_*` 配置后出现），含 natural-language 文本框 + Send to model 按钮，spinner 期间驱动 `AgentController`；`config.py` 加 `ModelConfig`（`QUANTLAB_MODEL_BASE_URL` / `QUANTLAB_MODEL_API_KEY` / `QUANTLAB_MODEL_NAME` / `QUANTLAB_MODEL_TIMEOUT` / `QUANTLAB_MODEL_TEMPERATURE` / `QUANTLAB_MODEL_MAX_TOKENS`）。不引入新依赖——只用 stdlib `urllib`。
+- 修改文件：`src/quantlab_agent/ports/model_provider.py`、`src/quantlab_agent/adapters/openai_compatible.py`、`src/quantlab_agent/adapters/fake_provider.py`、`src/quantlab_agent/agent/tool_format.py`、`src/quantlab_agent/agent/controller.py`、`src/quantlab_agent/cli.py`、`app.py`、`src/quantlab_agent/config.py`、新增 `tests/unit/test_openai_compatible.py` + `tests/unit/test_controller.py` + `tests/unit/test_tool_format.py`、`tests/integration/test_cli_demo.py`、本规划。
+- 验证命令及结果：`.\.venv\Scripts\python.exe -m pytest`，110 项通过；`.\.venv\Scripts\python.exe -m evaluation.runner` 仍输出 "16 passed, 0 failed, 8 skipped"；`.\.venv\Scripts\ruff.exe check src tests app.py evaluation` 通过；`.\.venv\Scripts\python.exe -m quantlab_agent.cli --help` 列出 demo + chat 子命令；未设 env 时 `quantlab-agent chat` 退出码 2 并打印缺失的变量名。
+- 实际模型与运行模式：未调用真实模型（无 API key）；测试用 `FakeProvider` 覆盖工具调用、文本回应、网络错误、预算耗尽四种 `ModelTurn`。手动烟雾测试需要用户设置 `QUANTLAB_MODEL_*` 环境变量后跑 `python -m quantlab_agent.cli chat "compare DEMO_A and DEMO_B in 2024-01"`。
+- 失败／未验证事项：未在真实模型下端到端跑过——这是有意为之（CI 不能依赖外部 API key）；用户在本地设环境变量后做手动验证。
+- 新增或修改的决策：(1) M3 选 OpenAI-compatible 而非各厂商私有协议——一份代码覆盖 80%+ 主流厂商；Anthropic API shape 不同（messages + x-api-key 头），留待以后单写 provider。(2) 用 stdlib `urllib` 而非 `httpx`——减少依赖，CI 不需要额外 mock 库；后续需要 streaming/async 时再换 `httpx`。(3) `AgentController.run_service` 暴露为公开属性——CLI 需要在 controller 启动前拿到 RunService 来 `create_run`，公开是干净的做法。(4) UI Real Model tab 仅在 `model.configured` 为真时渲染——避免让用户看到不能用的空 tab。
+- 下一步：手动 smoke（设 env 跑 `chat` 子命令）；后续把 evaluation runner 的 8 项 deferred 切到模型驱动模式。
+- 是否需要用户补充信息：手动 smoke 需要用户提供 `QUANTLAB_MODEL_*` 环境变量。
 
 ## 21. 参考依据与使用限制
 
