@@ -113,7 +113,9 @@ quantlab-agent/
 │   └── cli.py                  # `quantlab-agent demo` entry point
 └── tests/
     ├── unit/                   # domain + application + adapter + agent unit tests
-    └── integration/            # demo flow + tool pipeline + UI smoke tests
+    ├── integration/            # demo flow + tool pipeline + UI smoke tests
+    └── evaluation/             # runner tests for cases.jsonl
+evaluation/                    # E01–E24 evaluation cases + runner
 ```
 
 ## Run the tests
@@ -127,6 +129,12 @@ quantlab-agent/
 
 # Just integration tests
 .\.venv\Scripts\python.exe -m pytest tests/integration
+
+# Just evaluation runner tests
+.\.venv\Scripts\python.exe -m pytest tests/evaluation
+
+# Run the E01–E24 evaluation cases (16 ready, 8 deferred)
+.\.venv\Scripts\python.exe -m evaluation.runner
 
 # Lint and format
 .\.venv\Scripts\ruff.exe check src tests

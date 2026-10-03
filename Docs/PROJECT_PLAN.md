@@ -1058,6 +1058,7 @@ runs/<run_id>/
 - [x] 完成本地图表、Markdown 报告和确定性演示模式。
 - [x] 增加 CLI 演示入口：`quantlab-agent demo`。
 - [x] 完成 M4：Streamlit 本地 UI；上传 CSV、日期区间、指标选择；调用同一 ToolRegistry；展示指标表、图表 PNG、报告下载、工具调用记录。
+- [x] 完成 M5 评估集：E01–E24 中 16 项可本地验证、8 项标记 deferred 待 M3。
 
 ### 19.2 尚未完成
 
@@ -1067,26 +1068,26 @@ runs/<run_id>/
 - [x] 实现工具注册与运行记录。
 - [x] 实现演示模式。
 - [x] 实现本地图表和报告。
-- [ ] 接入真实模型（M3）。
 - [x] 实现本地 UI（M4）。
-- [ ] 执行真实 Agent 评估（M5）；当前程序测试和演示模式测试已完成。
-- [ ] 录制演示、整理简历表述（M5）。
+- [x] 准备 E01–E24 评估集（M5）。
+- [ ] 接入真实模型（M3）后才能跑完剩余 8 项评估。
+- [ ] 录制演示、整理简历表述。
 
 ### 19.3 当前验证状态
 
-- 功能代码：已完成 M1 确定性核心、M2 工具层、本地持久化、图表、报告、确定性演示模式、CLI demo、M4 Streamlit UI。
+- 功能代码：已完成 M1 确定性核心、M2 工具层、本地持久化、图表、报告、确定性演示模式、CLI demo、M4 Streamlit UI、M5 评估集。
 - 依赖安装：已在本地 `.venv` 安装项目开发依赖；尚未建立锁文件。
 - 模型 API：未配置、未调用。
-- 自动化测试：Python 3.14.0 下 84 项通过（包含 M4 UI 烟雾测试）。
-- Agent 评估：真实模型评估未执行；确定性演示模式通过集成测试。
+- 自动化测试：Python 3.14.0 下 98 项通过（包含 M4 UI 烟雾测试 + 8 项评估 runner 测试）。
+- Agent 评估：本地可验证 16 项全过；8 项 deferred 待 M3。
 - 部署：未开展。
 - Git 提交或推送：未执行。
 
 ### 19.4 下一阶段任务
 
-执行 M3：选定模型服务商后接入 ModelProvider Adapter，在同一 ToolRegistry 上驱动真实工具循环。
+执行 M3：选定模型服务商后接入 ModelProvider Adapter。同一 ToolRegistry 与同一评估 runner 复用——只把 deferred 8 项的 `mode` 改成真实模型驱动即可。
 
-M4 已让项目可以本地端到端演示；M3 完成后才能证明 Agent 在自然语言下能选对工具并产出可信报告。M5（评估 + README 完善 + 简历表述）在 M3 完成后做。
+M3 完成后，M5 的剩余工作只剩：录制演示视频与整理简历表述。
 
 - 若优先投开发岗展示完整产品，可先做本地 UI：上传 CSV、选择 demo、展示指标、图表、报告和工具调用记录。
 - 若优先突出 Agent 能力，可先实现 Provider Protocol、Fake Provider 测试和真实模型工具循环；真实模型接入前需要确定服务商、模型和密钥方式。
@@ -1171,6 +1172,18 @@ M4 已让项目可以本地端到端演示；M3 完成后才能证明 Agent 在�
 - 新增或修改的决策：UI 不另起一套工具调用——直接复用 `DemoController._execute_pipeline`，把日期与指标作为参数传入；保持"演示 / UI 走同一管线"原则。
 - 下一步：M3 真实模型接入，或先做 M5 的 README/简历收尾。
 - 是否需要用户补充信息：M3 需要确定服务商与密钥方式；M5 不需要。
+
+### 2026-10-03：M5 评估集与根因修复
+
+- 本次目标：完成 §13.3 列出的 E01–E24 评估用例中可在本地确定性管线上验证的部分；修掉 M4 暴露的两个 bug。
+- 实际完成：新增 `evaluation/` 目录：`cases.jsonl` 列出 24 项用例（16 `ready` + 8 `deferred`，后者带 `deferred_reason`）；`fixtures.py` 提供 6 个小 CSV fixture；`runner.py` 按 `mode` 分派（demo / custom / import_only / registry_unit），跑完输出 Markdown 表格；`evaluation/README.md` 解释使用方式。`tests/evaluation/test_runner.py` 8 项测试覆盖加载、分派、CLI 退出码。修两个 bug：(1) `os.open` 在 Python 3.14 + Windows 默认变文本模式——在 `_atomic_write_bytes` 显式加 `os.O_BINARY`，根因而非打补丁；(2) `RunService` 没暴露 `list_tool_calls` 而 UI 私自穿透两层私有——在 `RunService` 加同名方法作为唯一对外入口。`pyproject.toml` 改为 `[tool.setuptools.packages.find] where = ["src", "."]` 让 `evaluation/` 成为可导入包。
+- 修改文件：`pyproject.toml`、`src/quantlab_agent/adapters/local_stores.py`、`src/quantlab_agent/application/runs.py`、`app.py`、新增 `evaluation/{__init__,fixtures,runner}.py` + `README.md`、新增 `tests/evaluation/test_runner.py`、本规划。
+- 验证命令及结果：`.\.venv\Scripts\python.exe -m pytest`，98 项通过；`.\.venv\Scripts\python.exe -m evaluation.runner` 退出码 0，输出 "16 passed, 0 failed, 8 skipped"；`.\.venv\Scripts\ruff.exe check src tests app.py evaluation` 通过。
+- 实际模型与运行模式：未调用真实模型；16 项 ready 全部覆盖正常路径、数据质量边界、对齐规则、引用归属、跨 session。
+- 失败／未验证事项：8 项 deferred（E11/E12/E16/E17/E20/E21/E23/E24）需要真实模型——M3 完成后只需把对应 `mode` 改成模型驱动即可复用同一 runner。
+- 新增或修改的决策：(1) `evaluation/` 不放 `src/` 下——它是"项目级"工具而非应用代码；通过 pyproject 包发现机制让 `python -m evaluation.runner` 可执行且可被 pytest import。(2) 评估用例用 JSONL 而不是 YAML——JSON 在 Python 标准库里就直接 parse，没多余依赖。(3) deferred 用 `deferred_reason` 显式标注而不是默默 skip——便于以后接 M3 时能精确知道每项缺什么。
+- 下一步：M3 真实模型接入（仅 8 项 deferred 等它）；剩余 M5 工作只剩录制演示视频与简历表述。
+- 是否需要用户补充信息：M3 需要服务商与密钥方式。
 
 ## 21. 参考依据与使用限制
 
