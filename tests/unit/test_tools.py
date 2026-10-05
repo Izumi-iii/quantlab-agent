@@ -254,6 +254,53 @@ def test_inspect_dataset_returns_summary(tmp_path: Path) -> None:
     assert envelope.provenance.dataset_ids == (ds_a, ds_b)
 
 
+def test_list_datasets_returns_session_dataset_ids(tmp_path: Path) -> None:
+    stack = _build_stack(tmp_path)
+    registry = stack["registry"]
+    assert isinstance(registry, ToolRegistry)
+    ds_a, ds_b = _import_two_datasets(tmp_path, stack)
+    _seed_run(stack)
+
+    envelope = registry.execute(
+        run_id=RUN_ID,
+        session_id=SESSION,
+        tool_name="list_datasets",
+        arguments={},
+    )
+
+    assert envelope.ok, envelope.error
+    assert envelope.data is not None
+    by_asset = {item["asset_id"]: item["dataset_id"] for item in envelope.data["datasets"]}
+    assert by_asset == {"DEMO_A": ds_a, "DEMO_B": ds_b}
+
+
+def test_real_mode_prepare_binds_session_datasets_to_run(tmp_path: Path) -> None:
+    stack = _build_stack(tmp_path)
+    registry = stack["registry"]
+    assert isinstance(registry, ToolRegistry)
+    ds_a, ds_b = _import_two_datasets(tmp_path, stack)
+    _seed_run(stack)
+
+    envelope = registry.execute(
+        run_id=RUN_ID,
+        session_id=SESSION,
+        tool_name="prepare_analysis",
+        arguments={
+            "dataset_ids": [ds_a, ds_b],
+            "requested_start": "2024-01-02",
+            "requested_end": "2024-01-05",
+            "requested_metrics": [
+                MetricName.PERIOD_RETURN.value,
+                MetricName.MAX_DRAWDOWN.value,
+            ],
+        },
+    )
+
+    assert envelope.ok, envelope.error
+    run = stack["run_store"].get(RUN_ID, SESSION)  # type: ignore[union-attr]
+    assert run.dataset_ids == (ds_a, ds_b)
+
+
 def test_full_pipeline_succeeds(tmp_path: Path) -> None:
     stack = _build_stack(tmp_path)
     registry = stack["registry"]

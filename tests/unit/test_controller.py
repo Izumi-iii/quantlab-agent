@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from quantlab_agent.adapters.fake_provider import FakeProvider
 from quantlab_agent.adapters.local_stores import (
@@ -14,7 +15,7 @@ from quantlab_agent.adapters.local_stores import (
     LocalRunStore,
 )
 from quantlab_agent.adapters.plotting import PlotService
-from quantlab_agent.agent.controller import AgentController
+from quantlab_agent.agent.controller import AgentController, is_supported_analysis_request
 from quantlab_agent.agent.tools import default_registry
 from quantlab_agent.application.analyses import AnalysisService
 from quantlab_agent.application.charts import ChartService
@@ -90,19 +91,13 @@ def _seed_run(run_service: RunService, run_id: str = "11111111-1111-4111-8111-11
 from quantlab_agent.domain.models import RunStatus  # noqa: E402
 
 
-def test_controller_runs_build_report_via_model(tmp_path: Path) -> None:
+def test_controller_marks_text_without_report_as_needs_clarification(
+    tmp_path: Path,
+) -> None:
     registry, run_service = _build_stack(tmp_path)
     run = _seed_run(run_service)
     scripted = FakeProvider(
         [
-            ModelTurn(
-                tool_call=ToolCall(
-                    id="call_1",
-                    name="build_report",
-                    arguments=json.dumps({"analysis_id": "x", "metrics_id": "y", "chart_ids": []}),
-                ),
-                finish_reason="tool_calls",
-            ),
             ModelTurn(text="Report generated.", finish_reason="stop"),
         ],
         echo_calls=True,
@@ -115,13 +110,42 @@ def test_controller_runs_build_report_via_model(tmp_path: Path) -> None:
     final = controller.execute(
         run_id=run.run_id,
         session_id=SESSION,
-        user_request="do the thing",
+        user_request="compare DEMO_A and DEMO_B period return",
     )
-    # The build_report tool was called; it failed because no analysis is
-    # bound, but the controller recovered and the model produced a final
-    # text. The run should be marked succeeded.
-    assert final.status.value == "succeeded"
-    assert len(scripted.calls) == 2
+    assert final.status.value == "needs_clarification"
+    assert final.failure is not None
+    assert final.failure["code"] == "NEEDS_CLARIFICATION"
+    assert final.failure["details"]["model_text"] == "Report generated."
+    assert len(scripted.calls) == 1
+
+
+def test_controller_rejects_out_of_scope_request_before_model_call(tmp_path: Path) -> None:
+    registry, run_service = _build_stack(tmp_path)
+    run = _seed_run(run_service)
+    scripted = FakeProvider([ModelTurn(text="Here is a poem.", finish_reason="stop")])
+    controller = AgentController(
+        model_provider=scripted,
+        run_service=run_service,
+        tool_registry=registry,
+    )
+
+    final = controller.execute(
+        run_id=run.run_id,
+        session_id=SESSION,
+        user_request="帮我写一首诗",
+    )
+
+    assert final.status.value == "failed"
+    assert final.failure is not None
+    assert final.failure["code"] == "OUT_OF_SCOPE"
+    assert scripted.calls == []
+
+
+def test_scope_gate_accepts_chinese_analysis_and_rejects_unrelated_requests() -> None:
+    assert is_supported_analysis_request(
+        "请比较 DEMO_A 和 DEMO_B 在 2024-01 的区间收益和最大回撤，并生成报告"
+    )
+    assert not is_supported_analysis_request("帮我查一下明天上海天气")
 
 
 def test_controller_marks_budget_exceeded(tmp_path: Path) -> None:
@@ -173,7 +197,7 @@ def test_controller_marks_budget_exceeded(tmp_path: Path) -> None:
     final = controller.execute(
         run_id=run.run_id,
         session_id=SESSION,
-        user_request="x",
+        user_request="compare DEMO_A period return",
     )
     assert final.status.value == "failed"
     assert final.failure is not None
@@ -192,7 +216,7 @@ def test_controller_marks_failed_on_model_error(tmp_path: Path) -> None:
     final = controller.execute(
         run_id=run.run_id,
         session_id=SESSION,
-        user_request="x",
+        user_request="compare DEMO_A period return",
     )
     assert final.status.value == "failed"
     assert final.failure is not None
@@ -237,9 +261,9 @@ def test_controller_surfaces_protocol_error_and_lets_model_retry(
         session_id=SESSION,
         user_request="inspect DEMO_A",
     )
-    # Controller finished cleanly because the model recovered after
-    # seeing the protocol error.
-    assert final.status.value == "succeeded"
+    assert final.status.value == "needs_clarification"
+    assert final.failure is not None
+    assert final.failure["code"] == "NEEDS_CLARIFICATION"
 
     # The bad call is persisted in tool_calls.jsonl as failed.
     records = run_service.list_tool_calls(run.run_id, SESSION)
@@ -253,3 +277,128 @@ def test_controller_surfaces_protocol_error_and_lets_model_retry(
         msg.get("role") == "tool" and msg.get("tool_call_id") == "call_bad"
         for msg in second_messages
     )
+
+
+def test_controller_discovers_uuids_via_list_datasets_then_inspects(
+    tmp_path: Path,
+) -> None:
+    """The model follows the system-prompted workflow: first call
+    ``list_datasets`` to discover the real UUIDs, then ``inspect_dataset``
+    with one of those UUIDs. The whole chain succeeds without any
+    asset_id leaking into the dataset_id slot.
+    """
+    from quantlab_agent.adapters.local_stores import LocalDatasetStore
+    from quantlab_agent.application.datasets import DatasetService
+    from quantlab_agent.domain.models import DatasetMetadata, PriceBasis
+    from quantlab_agent.ports.model_provider import ModelProvider
+
+    # Seed two datasets into the session before the model runs.
+    dataset_store = LocalDatasetStore(tmp_path)
+    ds_service = DatasetService()
+    for asset_id in ("DEMO_A", "DEMO_B"):
+        metadata = DatasetMetadata(
+            asset_id=asset_id,
+            source_name="test",
+            price_basis=PriceBasis.FORWARD_ADJUSTED,
+            currency="CNY",
+            frequency="daily",
+            calendar_label="test",
+            daily_series_complete=True,
+            is_synthetic=True,
+        )
+        result = ds_service.import_csv(
+            b"date,close\n2024-01-02,100\n2024-01-03,101\n2024-01-04,102\n",
+            metadata=metadata,
+            session_id=SESSION,
+        )
+        assert result.dataset is not None
+        dataset_store.save(result.dataset, SESSION)
+
+    registry, run_service = _build_stack(tmp_path)
+    run = _seed_run(run_service)
+
+    # A dynamic provider: turn 1 calls list_datasets({}); turn 2 picks a
+    # UUID out of the previous tool result and calls inspect_dataset with
+    # it; turn 3 returns a final answer. We need turn 2 to be conditional
+    # on the actual UUIDs because they are randomly generated at import.
+    class _DiscoveryProvider(ModelProvider):
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+            self._step = 0
+
+        def complete_with_tools(
+            self,
+            messages: list[dict[str, Any]],
+            tools: list[dict[str, Any]],
+            timeout_seconds: float,
+        ) -> ModelTurn:
+            self.calls.append({"messages": list(messages)})
+            self._step += 1
+            if self._step == 1:
+                return ModelTurn(
+                    tool_call=ToolCall(
+                        id="call_list",
+                        name="list_datasets",
+                        arguments=json.dumps({}),
+                    ),
+                    finish_reason="tool_calls",
+                )
+            if self._step == 2:
+                # Pull the list_datasets tool result from the message
+                # history and reuse its first dataset_id.
+                tool_messages = [msg for msg in messages if msg.get("role") == "tool"]
+                assert tool_messages, "model turn 2 must see the list_datasets result"
+                last_tool = tool_messages[-1]
+                envelope = json.loads(last_tool["content"])
+                datasets = envelope["data"]["datasets"]
+                assert datasets, "session should have seeded datasets"
+                first_uuid = datasets[0]["dataset_id"]
+                return ModelTurn(
+                    tool_call=ToolCall(
+                        id="call_inspect",
+                        name="inspect_dataset",
+                        arguments=json.dumps({"dataset_id": first_uuid}),
+                    ),
+                    finish_reason="tool_calls",
+                )
+            return ModelTurn(
+                text="Inspected DEMO_A successfully.",
+                finish_reason="stop",
+            )
+
+    provider = _DiscoveryProvider()
+    controller = AgentController(
+        model_provider=provider,
+        run_service=run_service,
+        tool_registry=registry,
+    )
+    final = controller.execute(
+        run_id=run.run_id,
+        session_id=SESSION,
+        user_request="inspect DEMO_A and build a report",
+    )
+    assert final.status.value == "needs_clarification"
+    assert final.failure is not None
+    assert final.failure["code"] == "NEEDS_CLARIFICATION"
+
+    # Both tool calls succeeded and were persisted.
+    records = run_service.list_tool_calls(run.run_id, SESSION)
+    assert [r.tool_name for r in records] == ["list_datasets", "inspect_dataset"]
+    assert all(r.status.value == "succeeded" for r in records)
+
+    # The list_datasets tool-result contained two UUIDs — proves the
+    # model got real data to work from rather than guessing.
+    list_call, inspect_call = records
+    list_envelope_data = list_call.result_envelope.data
+    assert list_envelope_data is not None
+    returned_ids = {item["dataset_id"] for item in list_envelope_data["datasets"]}
+    assert len(returned_ids) == 2
+    # inspect_dataset bound the same UUID the model pulled from the list.
+    inspect_envelope_data = inspect_call.result_envelope.data
+    assert inspect_envelope_data is not None
+    assert inspect_envelope_data["asset_id"] in {"DEMO_A", "DEMO_B"}
+    assert inspect_envelope_data["dataset_id"] in returned_ids
+    # After inspect_dataset, the run has exactly one dataset bound.
+    final_run = run_service.get_run(run.run_id, SESSION)
+    assert len(final_run.dataset_ids) == 1
+    assert final_run.dataset_ids[0] in returned_ids

@@ -1,4 +1,4 @@
-"""ToolRegistry and the five tool handlers.
+"""ToolRegistry and the registered tool handlers.
 
 The handlers consume the existing application services
 (``DatasetService``, ``AnalysisService``, ``ChartService``,
@@ -65,6 +65,16 @@ class _StrictModel(BaseModel):
 
 class InspectDatasetInput(_StrictModel):
     dataset_id: str = Field(min_length=36, max_length=36)
+
+
+class ListDatasetsInput(_StrictModel):
+    """List datasets already imported in the current session.
+
+    Takes no arguments — the model should call this before
+    ``inspect_dataset`` so it can discover real dataset_ids (UUIDs)
+    instead of guessing the human-readable asset_id (e.g. "DEMO_A").
+    The session scope is enforced by ``ToolContext.session_id``.
+    """
 
 
 class PrepareAnalysisInput(_StrictModel):
@@ -164,10 +174,11 @@ def _make_provenance(run: object) -> Provenance:
     )
 
 
-def make_inspect_dataset_handler() -> ToolHandler:
+def make_inspect_dataset_handler(*, run_service: RunService) -> ToolHandler:
     def handle(ctx: ToolContext, args: BaseModel) -> dict[str, Any]:
         assert isinstance(args, InspectDatasetInput)
         snapshot = ctx.dataset_store.get(args.dataset_id, ctx.session_id)
+        run_service.add_dataset(ctx.run_id, ctx.session_id, args.dataset_id)
         manifest = snapshot.manifest
         return {
             "dataset_id": manifest.dataset_id,
@@ -197,6 +208,41 @@ def make_inspect_dataset_handler() -> ToolHandler:
     return handle
 
 
+def make_list_datasets_handler() -> ToolHandler:
+    """Return a list of datasets already imported into the session.
+
+    Used by the model to discover real ``dataset_id`` values before
+    calling ``inspect_dataset``. The session scope (from
+    ``ToolContext.session_id``) prevents the model from listing other
+    sessions' data; this is a read-only tool — it does not require any
+    dataset to be bound to the run yet.
+    """
+    from quantlab_agent.adapters.local_stores import LocalDatasetStore
+
+    def handle(ctx: ToolContext, args: BaseModel) -> dict[str, Any]:
+        assert isinstance(args, ListDatasetsInput)
+        # Only LocalDatasetStore supports session-wide listing today;
+        # other implementations (e.g. in-memory test doubles) return [].
+        store = ctx.dataset_store
+        if not isinstance(store, LocalDatasetStore):
+            return {"datasets": []}
+        items = store.list_in_session(ctx.session_id)
+        return {
+            "datasets": [
+                {
+                    "dataset_id": item["dataset_id"],
+                    "asset_id": item["asset_id"],
+                    "date_min": item["date_min"],
+                    "date_max": item["date_max"],
+                    "row_count": item["row_count"],
+                }
+                for item in items
+            ]
+        }
+
+    return handle
+
+
 def make_prepare_analysis_handler(
     *,
     analysis_service: AnalysisService,
@@ -206,12 +252,12 @@ def make_prepare_analysis_handler(
 
     def handle(ctx: ToolContext, args: BaseModel) -> dict[str, Any]:
         assert isinstance(args, PrepareAnalysisInput)
-        for dataset_id in args.dataset_ids:
-            run_service.add_dataset(ctx.run_id, ctx.session_id, dataset_id)
-
         datasets = [
             ctx.dataset_store.get(dataset_id, ctx.session_id) for dataset_id in args.dataset_ids
         ]
+        for dataset_id in args.dataset_ids:
+            run_service.add_dataset(ctx.run_id, ctx.session_id, dataset_id)
+
         prepared = analysis_service.prepare(
             datasets,
             session_id=ctx.session_id,
@@ -608,27 +654,19 @@ def _check_reference_ownership(
     validated: BaseModel,
     run: object,
 ) -> QuantLabError | None:
-    dataset_ids = getattr(run, "dataset_ids", ())
     analysis_id = getattr(run, "analysis_id", None)
     metrics_id = getattr(run, "metrics_id", None)
     chart_ids = getattr(run, "chart_ids", ())
 
     if definition.name == "inspect_dataset":
-        ds = getattr(validated, "dataset_id", None)
-        if ds and ds not in dataset_ids:
-            return QuantLabError(
-                ErrorCode.UNKNOWN_REFERENCE,
-                "Dataset is not bound to this run.",
-                details={"dataset_id": ds},
-            )
+        # inspect_dataset is the discovery step: the model uses it
+        # *before* binding datasets (the handler calls add_dataset itself).
+        # Cross-session leakage is caught inside the handler by
+        # ``ctx.dataset_store.get(..., ctx.session_id)`` raising
+        # UNKNOWN_REFERENCE. So this branch is always a no-op.
+        return None
     elif definition.name == "prepare_analysis":
-        for ds in getattr(validated, "dataset_ids", ()):
-            if ds not in dataset_ids:
-                return QuantLabError(
-                    ErrorCode.UNKNOWN_REFERENCE,
-                    "Dataset is not bound to this run.",
-                    details={"dataset_id": ds},
-                )
+        return None
     elif definition.name == "compute_metrics":
         target = getattr(validated, "analysis_id", None)
         if target and target != analysis_id:
@@ -690,14 +728,30 @@ def default_registry(
 
     registry.register(
         ToolDefinition(
+            name="list_datasets",
+            description=(
+                "List datasets already imported into the current session. "
+                "Call this first to discover real dataset_id values "
+                "(UUIDs) before calling inspect_dataset — the "
+                "human-readable asset_id (e.g. 'DEMO_A') is not a valid "
+                "dataset_id and the schema validator will reject it."
+            ),
+            input_model=ListDatasetsInput,
+            output_description="list of {dataset_id, asset_id, date_min, date_max, row_count}",
+            handler=make_list_datasets_handler(),
+            tool_kind="read",
+        )
+    )
+    registry.register(
+        ToolDefinition(
             name="inspect_dataset",
             description=(
                 "Return metadata, coverage, and quality issues for a dataset "
-                "already bound to the current run."
+                "in the current session, and bind it to the current run."
             ),
             input_model=InspectDatasetInput,
             output_description="dataset summary and quality issues",
-            handler=make_inspect_dataset_handler(),
+            handler=make_inspect_dataset_handler(run_service=run_service),
         )
     )
     registry.register(
@@ -773,6 +827,7 @@ __all__ = [
     "ToolRegistry",
     "default_registry",
     "InspectDatasetInput",
+    "ListDatasetsInput",
     "PrepareAnalysisInput",
     "ComputeMetricsInput",
     "CreateChartsInput",

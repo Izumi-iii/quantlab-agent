@@ -27,7 +27,7 @@ quantlab-agent = "quantlab_agent.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src", "."]
-include = ["quantlab_agent*", "evaluation*"]
+include = ["quantlab_agent*", "evaluation*", "webui*"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"

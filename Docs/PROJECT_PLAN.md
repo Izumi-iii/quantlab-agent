@@ -590,6 +590,144 @@ RUNNING → CANCELLED
 - 追问基准日期，或展示解析后的明确日期供用户确认。
 - 运行记录保存基准日期、时区和最终绝对日期。
 
+### 9.5 Natural Language Agent 规划层设计（待实现）
+
+当前两栏 Web UI 的 Natural Language Agent 入口仍然主要走确定性 demo pipeline：用户文本会写入 run 和 report，但分析行为默认仍是“绑定当前 session 的所有数据集，使用固定日期区间和固定指标，顺序执行 inspect → prepare → compute → chart → report”。这保证了演示稳定，但不代表自然语言真的决定了分析计划。
+
+后续目标不是把 UI 做得更像聊天，而是让用户请求真正影响执行计划：选择哪些数据集、计算哪些指标、是否生成图表、是否生成报告、是否只做数据质量检查，以及何时追问。
+
+建议新增一个受控 planner 层，位于 UI / message handler 与工具执行之间：
+
+```text
+用户自然语言
+  ↓
+Planner（真实模型或可测试替身）
+  ↓
+结构化 AnalysisPlan
+  ↓
+PlanValidator（后端确定性校验）
+  ↓
+PlanExecutor（按计划调用现有工具）
+  ↓
+表格 / 图表 / 报告 / 澄清问题
+```
+
+Planner 只负责把自然语言翻译成结构化计划；数值计算、数据选择校验、日期范围校验和工具调用顺序仍由后端控制。这样比直接让模型自由调用所有工具更稳定，也更容易测试。
+
+#### 9.5.1 P0 优先级
+
+让两栏 Web UI 更像正式 Agent 的 P0 不是视觉效果，而是让自然语言真正影响分析行为。首轮实现应优先保证以下四点：
+
+1. **接入 planner 层**：用户输入先转成结构化 `AnalysisPlan`，再由后端校验和执行。不同请求必须能产生不同 intent、不同数据集选择、不同指标和不同工具路径。
+2. **支持澄清问题**：当用户请求缺少关键参数时，进入 `clarify` / `NEEDS_CLARIFICATION`，由 Agent 在左侧对话中追问，而不是直接跑固定分析或猜测参数。
+3. **结果以 Agent 消息表达**：左侧不应只显示“已完成分析”。应根据执行结果生成简短用户可读消息，例如“我检查了 2 个数据集，数据质量可用”“我使用了共同区间 2024-01-02 至 2024-01-15”“报告已生成，右侧可预览”。工具调用链继续默认折叠。
+4. **右侧产物跟随 intent**：`data_quality` 展示质量诊断，`metrics` 展示指标表，`chart` 展示图表，`report` 展示 Markdown 报告；不要所有请求都默认生成完整报告。
+
+这四项完成前，Natural Language Agent 仍只能视为“聊天式 demo UI”，不能视为真正根据问题行动的 Agent。
+
+#### 9.5.2 AnalysisPlan 草案
+
+计划对象建议先覆盖首版需要的有限字段：
+
+```json
+{
+  "intent": "data_quality | metrics | chart | report | clarify | out_of_scope",
+  "dataset_refs": ["DEMO_A", "DEMO_B"],
+  "date_range": {
+    "start": "2024-01-02",
+    "end": "2024-01-15"
+  },
+  "metrics": ["period_return", "max_drawdown"],
+  "charts": ["normalized_prices", "drawdown"],
+  "clarifying_question": null,
+  "user_visible_summary": "Compare DEMO_A and DEMO_B over the selected range."
+}
+```
+
+字段含义：
+
+- `intent`：决定执行路径。`data_quality` 只检查数据；`metrics` 计算指标；`chart` 生成图；`report` 生成完整报告；`clarify` 表示需要追问；`out_of_scope` 表示拒绝。
+- `dataset_refs`：用户可见资产名、文件名或 planner 从数据集列表中选择出的引用。进入执行前必须解析为当前 session 内的 `dataset_id`。
+- `date_range`：必须是绝对日期。若用户用了“最近一年”“去年”等相对表达，应先追问或返回待确认计划，不能静默猜测。
+- `metrics`：只能来自当前系统支持的指标集合，例如 `period_return`、`max_drawdown`、`annualized_volatility`。
+- `charts`：只能来自当前系统支持的图表类型，例如 `normalized_prices`、`drawdown`。
+- `clarifying_question`：当请求缺少关键参数时，作为下一轮对话展示给用户。
+- `user_visible_summary`：给 UI 展示“将要做什么”，不是计算依据。
+
+#### 9.5.3 典型请求到计划的映射
+
+| 用户请求 | 期望 intent | 期望行为 |
+| --- | --- | --- |
+| “数据质量怎么样？” | `data_quality` | 调用 `list_datasets` 和 `inspect_dataset`；不计算指标、不生成完整报告。 |
+| “只分析 DEMO_A 的最大回撤” | `metrics` | 只选择 DEMO_A，指标只含 `max_drawdown`；不默认把所有资产都加入。 |
+| “画一下 DEMO_A 和 DEMO_B 的走势” | `chart` | 选择两个资产，生成归一化价格图；可不生成 Markdown report。 |
+| “比较两个资产并生成报告” | `report` | 检查数据、准备分析、计算指标、生成图表和报告。 |
+| “分析一下”且当前有多个资产 | `clarify` | 追问用户要分析哪个资产、哪个区间、需要指标/图表/报告中的哪一种。 |
+| “推荐我买哪只股票” | `out_of_scope` | 拒绝投资建议，不调用分析工具。 |
+
+#### 9.5.4 PlanValidator 规则
+
+Planner 输出不能直接执行，必须经过后端确定性校验：
+
+- 数据集必须属于当前 session，不能跨 session 引用旧数据。
+- 用户可见 `asset_id` / 文件名必须解析为唯一 `dataset_id`；存在歧义时进入 `clarify`。
+- 日期必须是合法 ISO 日期，且与数据覆盖区间有交集；无交集时失败或追问。
+- 指标和图表必须在白名单内。
+- `out_of_scope` 请求不能落到工具执行。
+- `data_quality` 不应隐式生成收益报告。
+- `metrics` 或 `chart` 若缺少日期范围，可使用数据覆盖区间作为候选，但应在 UI 中明确展示；对相对日期仍需追问或确认。
+- 计划校验失败时应返回结构化错误或澄清问题，而不是让模型继续猜。
+
+#### 9.5.5 PlanExecutor 执行路径
+
+执行层复用现有 Tool Registry 和服务，不重新实现计算：
+
+| intent | 最小工具路径 |
+| --- | --- |
+| `data_quality` | `list_datasets` → 对目标数据集调用 `inspect_dataset` |
+| `metrics` | `list_datasets` → `inspect_dataset` → `prepare_analysis` → `compute_metrics` |
+| `chart` | `list_datasets` → `inspect_dataset` → `prepare_analysis` → 可选 `compute_metrics` → `create_charts` |
+| `report` | `list_datasets` → `inspect_dataset` → `prepare_analysis` → `compute_metrics` → `create_charts` → `build_report` |
+| `clarify` | 不调用分析工具，保存 `NEEDS_CLARIFICATION` |
+| `out_of_scope` | 不调用分析工具，保存 `FAILED` 或专门的拒绝状态 |
+
+工具调用链默认只作为可折叠调试信息展示。用户主要看到的是：Agent 的追问、质量诊断、指标表、图表或报告。
+
+#### 9.5.6 与现有 AgentController 的关系
+
+现有 `AgentController` 已经支持真实模型 tool-calling：模型可以看到工具定义并逐步调用工具。这个能力可以继续保留，但两栏 Web UI 的产品体验不应完全依赖模型自由调工具。
+
+建议分阶段：
+
+1. **Planner-first**：真实模型只输出 `AnalysisPlan`；后端 deterministic executor 按计划调用工具。这是首选落地方案。
+2. **Tool-calling fallback**：保留现有 `AgentController`，用于 CLI、评估或高级模式。
+3. **Hybrid**：planner 先出计划；必要时允许模型在受限工具集合内补充调用，但仍要经过引用归属和 schema 校验。
+
+这样可以把“自然语言理解”与“可信计算执行”分开，降低模型误用 `dataset_id`、漏掉必要工具、提前输出文本或生成无证据报告的风险。
+
+#### 9.5.7 Web UI 交互要求
+
+两栏 UI 后续应支持以下状态：
+
+- `clarification`：左侧以 Agent 消息形式追问，用户回答后创建新计划或补全原计划。
+- `artifact`：右侧根据产物类型切到表格、图表或报告。
+- `process`：工具调用链默认折叠，仅用户需要排查时展开。
+- `plan_summary`：可选显示“将分析 DEMO_A，指标为最大回撤，区间为 2024-01-02 至 2024-01-15”，便于用户确认。
+
+若没有模型配置，Web UI 可以继续使用 demo fallback，但必须清楚标注 demo 不是自然语言规划；不能让用户误以为不同提问已经真实影响分析行为。
+
+#### 9.5.8 最小实现切片
+
+第一轮实现不要求覆盖所有能力，建议只做最小闭环：
+
+1. 新增 `AnalysisPlan` schema、planner prompt 和 fake planner 测试。
+2. Web UI `/messages` 在模型配置存在时走 planner；未配置时继续 demo fallback。
+3. 首批只支持 `data_quality`、`metrics`、`report` 三类 intent。
+4. `chart` intent、多轮澄清和更完整的计划确认放到第二轮。
+5. 新增评估用例，验证不同自然语言请求会产生不同计划和不同工具路径。
+
+完成该切片后，才能说 Natural Language Agent 的用户输入开始真实影响分析行为。
+
 ## 10. 技术架构与目录草案
 
 ### 10.1 初始技术选择
@@ -1060,6 +1198,7 @@ runs/<run_id>/
 - [x] 完成 M4：Streamlit 本地 UI；上传 CSV、日期区间、指标选择；调用同一 ToolRegistry；展示指标表、图表 PNG、报告下载、工具调用记录。
 - [x] 完成 M5 评估集：E01–E24 中 16 项可本地验证、8 项标记 deferred 待 M3。
 - [x] 完成 M3：OpenAI-compatible ModelProvider Adapter + AgentController 主循环 + CLI `chat` 子命令 + Streamlit Real Model tab。用户只需配置 `QUANTLAB_MODEL_BASE_URL` / `QUANTLAB_MODEL_API_KEY` / `QUANTLAB_MODEL_NAME` 即可接入 OpenAI / DeepSeek / Moonshot / 智谱 / 豆包 / 通义千问 / 百度千帆 等所有 OpenAI 兼容端点。
+- [x] 在 M3 主线之上新增 `list_datasets` 工具：让模型在 `inspect_dataset` 之前能拿到真实 UUID，避免再因误用 asset_id 触发 PROTOCOL_ERROR。
 
 ### 19.2 尚未完成
 
@@ -1080,7 +1219,7 @@ runs/<run_id>/
 - 功能代码：M1 确定性核心、M2 工具层与持久化、M4 Streamlit UI、M5 评估集、M3 真实模型适配器全部完成。
 - 依赖安装：已在本地 `.venv` 安装项目开发依赖；尚未建立锁文件。M3 不引入新依赖（用 stdlib `urllib`）。
 - 模型 API：可选用。配置三个 `QUANTLAB_MODEL_*` 环境变量即可启用；未配置时跑 demo 模式。
-- 自动化测试：Python 3.14.0 下 110 项通过。
+- 自动化测试：Python 3.14.0 下 141 项通过（含 list_datasets + dynamic controller + webui 集成测试）。
 - Agent 评估：本地可验证 16 项全过；8 项 deferred（E11/E12/E16/E17/E20/E21/E23/E24）——配置模型后可手动驱动。
 - 部署：未开展。
 - Git 提交或推送：未执行。
@@ -1211,6 +1350,29 @@ runs/<run_id>/
 - 下一步：手动 smoke 测几次不同模型（DeepSeek / Moonshot / 智谱），看 prompt 改进后是否需要继续迭代；后续录演示视频 + 简历表述。
 - 是否需要用户补充信息：可选——不同模型可能需要 prompt 调整。
 
+### 2026-10-03：M3 list_datasets 工具（discovery tool）
+
+- 本次目标：上一轮 prompt 改进依赖模型自律重试；为模型提供一个结构化的发现通道——`list_datasets` 返回当前会话里所有 dataset 的 UUID + asset_id + coverage，让模型不再"猜 asset_id"。
+- 实际完成：(1) `LocalDatasetStore.list_in_session()`：扫 `sessions_root/datasets/*/manifest.json`，按目录名排序，返回 `{dataset_id, asset_id, date_min, date_max, row_count}` 列表；空会话返回 `[]`；缺 manifest 的目录跳过；非 UUID session_id 走 `_validate_uuid` 拒绝。(2) `make_list_datasets_handler()`：无参数（`ListDatasetsInput` 不带字段）；用 `isinstance(ctx.dataset_store, LocalDatasetStore)` 兜底——非 LocalDatasetStore（如内存替身）返回 `{datasets: []}`，避免污染 Protocol。(3) `default_registry()` 注册 `list_datasets`，`tool_kind="read"`，input_model 不强制参数；`__all__` 加 `ListDatasetsInput`。(4) 修一个由"inspect_dataset 现在会 add_dataset"带来的副作用：`_check_reference_ownership` 原本对 `inspect_dataset` 还有"dataset 必须已绑定"的检查，导致首次 inspect 后 dataset_ids=[X]、再 inspect Y 时被误拒；改为 inspect_dataset 在 `_check_reference_ownership` 中始终放行（跨 session 泄漏仍由 handler 内部 `ctx.dataset_store.get` 抛 UNKNOWN_REFERENCE 拦下）。(5) `SYSTEM_PROMPT` 改为先 `list_datasets` 拿 UUID、再 `inspect_dataset` 确认质量。(6) 测试：`test_dataset_list_in_session_returns_summaries` 等 6 项 store 测试覆盖空、单条、多条排序、跨 session 隔离、stray 目录跳过、非 UUID 拒绝；`test_controller_discovers_uuids_via_list_datasets_then_inspects` 用动态 Provider（按步骤生成 ModelTurn，第二步从 message history 抽 list_datasets 结果里的 UUID 喂给 inspect_dataset）端到端验证：run 标记 succeeded、`tool_calls.jsonl` 两条都是 succeeded、dataset_ids 被 bind。
+- 修改文件：`src/quantlab_agent/adapters/local_stores.py`、`src/quantlab_agent/agent/tools.py`、`src/quantlab_agent/agent/controller.py`、`tests/unit/test_stores.py`、`tests/unit/test_controller.py`、`README.md`、本规划。
+- 验证命令及结果：`.\.venv\Scripts\python.exe -m pytest`，123 项通过；`.\.venv\Scripts\ruff.exe check src tests app.py evaluation` 通过；`.\.venv\Scripts\ruff.exe format --check src tests app.py evaluation` 通过；`.\.venv\Scripts\python.exe -m evaluation.runner` 仍输出 "16 passed, 0 failed, 8 skipped"。
+- 实际模型与运行模式：未调用真实模型；新增测试用动态 ModelProvider 模拟"看到 list_datasets 结果再选 UUID"的两步推理。
+- 失败／未验证事项：未在真实模型下端到端跑——但测试已覆盖 list_datasets 的契约（返回 UUID）、model 用 list_datasets 结果选 UUID 的两步回路、最终 succeeded 状态。手动 smoke 时模型应该直接采用 list_datasets 路径，无需再走 PROTOCOL_ERROR 兜底。
+- 新增或修改的决策：(1) `list_datasets` 无 input 参数——session_id 由 `ToolContext` 隐式提供，让模型不必传 UUID 形态的 session_id 又多一处可能误填；(2) handler 用 `isinstance(LocalDatasetStore)` 而不是给 `DatasetStore` Protocol 加 `list_in_session`，保持 Protocol 最小面；(3) `inspect_dataset` 的引用归属检查改为"始终放行"——这是工具语义从"查询已 bind 的 dataset"变为"按需 bind 后查询"的连带修正，不放行会让 list_datasets → inspect_dataset(X) → inspect_dataset(Y) 在第二步失败。
+- 下一步：手动 smoke（最好直接用 list_datasets 看模型是否真在第一步就走对路径）；评估 runner 的 8 项 deferred 切到模型驱动模式；录演示视频 + 简历表述。
+- 是否需要用户补充信息：不需要。
+
+### 2026-10-04：两栏聊天 UI（实现 demo_output/agent_chat_ui_demo.html）
+
+- 本次目标：把 `demo_output/agent_chat_ui_demo.html` 的两栏布局（topbar + 固定 rail + workspace timeline + composer / preview 表格-图表-报告切换）从静态 demo 落地为真实可用的 Web UI，原有 Streamlit `app.py` 不动，作为旧入口并存。
+- 实际完成：(1) 新增 `webui/server.py` —— stdlib `ThreadingHTTPServer` + `BaseHTTPRequestHandler`，路由全部走正则编译的常量（`/api/sessions/{sid}/datasets`、`/api/sessions/{sid}/messages`、`/api/runs/{rid}`、`/api/runs/{rid}/chart/{cid}.png`、`/api/runs/{rid}/report/{rid}.md`、`/api/runs/{rid}/dataset/{dsid}.csv`、`/api/healthz`、`/api/config`、static 资源）；request body 用 Pydantic-friendly 的 `dict[str, Any]` 解码；multipart 解析手写（stdlib 3.14 已删除 `cgi`），用 `Content-Disposition` + boundary split，支持单文件 + 多文本字段；错误统一为 `BadRequest` / `NotFound` / `QuantLabError` 三类映射到 400/400/400，异常落 `log.exception` 后 500。(2) `WebState` dataclass 持有 `runs_dir`、`DemoController`、`DatasetService`、`dataset_store`、`ui_model_overrides`、`lock`；`_ThreadingServer` 把 state 挂到 server 实例，handler 通过 `self.server.state` 拿。(3) `webui/static/index.html` —— 完整移植 demo 的 CSS（CSS Grid、sticky topbar、44px rail、24px timeline、accent/green/orange status 色），新增 JS：客户端生成 UUID 存 `localStorage` 作 session_id；fetch `GET /api/sessions/{sid}/datasets` 渲染 dataset-card（点击切到 Quick table，自动 fetch `/api/runs/{rid}/dataset/{ds}.csv` 渲染 table）；fetch `GET /api/config` 更新顶栏 `deepseek-chat` 徽标；"添加更多数据"按钮触发 hidden file input → multipart upload → 列表重渲染；composer 的 ↑ 按钮 + Ctrl+Enter → `POST /api/sessions/{sid}/messages` → 把 `tool_calls[]` 渲染成 timeline 步骤（user 橘色、tool 绿色、succeeded `.tool-ok`、failed `.tool-failed`、error 行标 `error_code`），并把首个 `create_charts` 的 PNG 塞进 preview 卡片、把 report markdown 塞进 `<pre>`、把 `status` pill 放到 footer；timeline 末尾若 succeeded 显示"已完成分析"提示气泡，failed 显示失败气泡；footer 的 `Download CSV` 按钮把最后一次表格视图的 CSV 缓存拉下来。(4) CLI 新增 `quantlab-agent ui --host --port --runs-dir`，启动后阻塞；`block=False` 也支持但默认 block=True。`pyproject.toml` 的 `packages.find.include` 加上 `webui*`。(5) `tests/integration/test_webui.py` 14 项：healthz、index、static 404、空 session、upload + list、message drive 全链路、chart PNG 二进制（断言 `b'\x89PNG\r\n\x1a\n'` 签名）、report markdown、message without datasets 400、empty text 400、get_run、unknown route 404、config env 反映、static 路径穿越拦截。`_ServerThread` fixture 用 `_free_port()` 拿临时端口 + `socket.create_connection` 探活确保 server 真正在 listen 才 yield；multipart helper 手写避免 `cgi` 已删除的问题。
+- 修改文件：新增 `webui/server.py`、`webui/static/index.html`、`tests/integration/test_webui.py`；改 `src/quantlab_agent/cli.py`（加 `ui` subcommand + handler）；改 `pyproject.toml`（packages.find include `webui*`）；`README.md`（加 UI 章节和路由表、目录结构）；本规划。
+- 验证命令及结果：`.\.venv\Scripts\python.exe -m pytest`，141 项通过；`.\.venv\Scripts\ruff.exe check src tests app.py evaluation webui` 通过；`.\.venv\Scripts\ruff.exe format --check ...` 通过；手动 curl 验证：healthz 200、`/` 返回 index、`/api/sessions/{sid}/datasets` 空 → upload 两份 demo CSV → `POST /api/sessions/{sid}/messages` 返回 run.status=succeeded、chart_ids=[2]、tool_calls 包含 inspect/prepare/compute/create_charts/build_report 全 5 步；`/api/runs/{rid}/chart/{cid}.png` 返回 55KB PNG（`\x89PNG\r\n\x1a\n` 头）；`/api/runs/{rid}/report/{rid}.md` 返回 markdown。
+- 实际模型与运行模式：未调真实模型；目前 `ui` 子命令走 `default_demo_controller`（和 `quantlab-agent demo` 同一条 pipeline），因为真实模型需要用户配 `QUANTLAB_MODEL_*` env，后续要切到 `build_real_agent_stack` 只需要在 `webui.server.WebState` 里加一个 `model_config` 字段 + 一个 `/api/sessions/{sid}/model_config` POST 端点（让 UI 像 Streamlit 那样把 base_url/api_key/model 三项从 sidebar 推过来），handler 根据这个决定用 `DemoController` 还是 `AgentController.execute`。
+- 失败／未验证事项：浏览器端手工 smoke 未做（只是 curl 验证 JSON 端点契约）；未在真实模型下端到端跑；UI 现在不支持"对话式多轮"——每次 send 都新建一个 run；左侧 rail 四个图标（New analysis / Datasets / Reports / Process）还是纯装饰，没有对应路由；预览面板只展示首个 chart_id（多资产对比时第二张图看不到）。
+- 新增或修改的决策：(1) 用 stdlib `http.server` 而不是 FastAPI/Flask——M3 明确"不引入 httpx/FastAPI 等大依赖"，项目代码全是同步，`ThreadingHTTPServer` + 一个 `BaseHTTPRequestHandler` 子类足以承载 ~8 个端点（参考 explore agent 的报告）。(2) 客户端 UUID 存 localStorage 而不是服务端分配——避免引入 session 注册端点，与 demo 中"session id 在 sidebar 显示"的心智模型一致。(3) multipart 解析手写而不是装 `python-multipart`——3.14 的 stdlib 已经没有了 `cgi`，写 30 行正则分割比加依赖更轻。(4) `_check_reference_ownership` 沿用"`inspect_dataset` 始终放行"——之前 list_datasets 那一轮已经把 `inspect_dataset` 从 ownership 检查里摘出来，这一轮没动它。(5) 图表只展示第一张：和"Quick chart"语义一致（demo 里也只有一张），多图轮播留到下一个 demo。(6) 错误一律 400（`BadRequest` / `QuantLabError`）：简化客户端处理，500 仅留作兜底。
+- 下一步：(1) 真实模型 wiring + UI 内的 model config 输入框；(2) 多轮对话：当前 run 用 needs_clarification 状态时，UI 把 `failure.details.model_text` 显示在 composer 上方作为"agent 提问"，用户再 send 时把 `original_request + agent_question + user_reply` 拼起来作为新 request；(3) rail 四个图标挂上真实路由（至少 Datasets 跳到 `/datasets` 子页列出所有 session、Process 跳到 `/runs/{rid}/process` 子页只显示 tool_calls）；(4) 浏览器手工 smoke + 录演示视频。
+- 是否需要用户补充信息：可选——若用户希望 demo 默认就调真实模型而非 demo controller，需要确定 base_url/api_key/model 走 env 还是 UI 输入。
 ## 21. 参考依据与使用限制
 
 - 项目名称和初始描述来自当前仓库 README：`A tool-calling agent for reproducible financial data analysis.`

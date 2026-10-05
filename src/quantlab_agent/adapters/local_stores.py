@@ -152,6 +152,31 @@ class LocalDatasetStore:
         d = self._dataset_dir(session_id, dataset_id)
         return str((d / "normalized.csv").resolve(strict=False))
 
+    def list_in_session(self, session_id: str) -> list[dict[str, object]]:
+        """Return a summary of every dataset stored in the session."""
+        _validate_uuid(session_id, label="session_id")
+        sessions_root = _safe_join(self._root, session_id, "datasets")
+        if not sessions_root.exists():
+            return []
+        items: list[dict[str, object]] = []
+        for ds_dir in sorted(sessions_root.iterdir()):
+            if not ds_dir.is_dir():
+                continue
+            manifest_path = ds_dir / "manifest.json"
+            if not manifest_path.exists():
+                continue
+            manifest = _read_json(manifest_path)
+            items.append(
+                {
+                    "dataset_id": manifest["dataset_id"],
+                    "asset_id": manifest["metadata"]["asset_id"],
+                    "date_min": manifest["date_min"],
+                    "date_max": manifest["date_max"],
+                    "row_count": manifest["row_count"],
+                }
+            )
+        return sorted(items, key=lambda item: (str(item["asset_id"]), str(item["dataset_id"])))
+
 
 _TERMINAL_STATUS_VALUES = frozenset({"succeeded", "failed", "cancelled"})
 

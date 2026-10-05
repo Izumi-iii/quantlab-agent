@@ -94,6 +94,17 @@ def _build_parser() -> argparse.ArgumentParser:
         default=DemoController.DEFAULT_SESSION_ID,
         help="UUID-shaped session id for the chat run",
     )
+    ui = subcommands.add_parser(
+        "ui",
+        help="start the local web UI (the demo HTML + stdlib HTTP server)",
+    )
+    ui.add_argument("--host", default="127.0.0.1", help="bind host (default 127.0.0.1)")
+    ui.add_argument("--port", type=int, default=8765, help="bind port (default 8765)")
+    ui.add_argument(
+        "--runs-dir",
+        default="runs",
+        help="directory where run manifests, charts, and reports are written",
+    )
     return parser
 
 
@@ -163,6 +174,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         payload = _summarize(runs_dir, final)
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0 if final.status.value == "succeeded" else 1
+
+    if args.command == "ui":
+        from webui.server import serve
+
+        runs_dir = Path(args.runs_dir).resolve()
+        print(f"QuantLab web UI listening on http://{args.host}:{args.port}")
+        print(f"  runs dir: {runs_dir}")
+        print("  open the URL above in a browser to interact.")
+        serve(host=args.host, port=args.port, runs_dir=runs_dir, block=True)
+        return 0
 
     parser.error(f"Unknown command: {args.command}")
     return 2

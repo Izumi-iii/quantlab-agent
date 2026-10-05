@@ -29,19 +29,108 @@ from quantlab_agent.domain.errors import ErrorCode, QuantLabError
 from quantlab_agent.domain.models import Run
 from quantlab_agent.ports.model_provider import ModelProvider
 
+SUPPORTED_REQUEST_HINT = (
+    "Real Model only supports uploaded CSV historical price analysis: "
+    "dataset inspection, date ranges, period return, annualized volatility, "
+    "maximum drawdown, charts, and Markdown reports. It does not support "
+    "web search, weather, poetry, translation, investment advice, trading, "
+    "forecasting, or unrelated chat."
+)
+
+_OUT_OF_SCOPE_TERMS = (
+    "weather",
+    "forecast",
+    "news",
+    "web search",
+    "search the web",
+    "poem",
+    "joke",
+    "translate",
+    "translation",
+    "recipe",
+    "buy",
+    "sell",
+    "recommend stock",
+    "investment advice",
+    "trading advice",
+    "天气",
+    "新闻",
+    "联网",
+    "搜索",
+    "写诗",
+    "诗",
+    "笑话",
+    "翻译",
+    "菜谱",
+    "买入",
+    "卖出",
+    "荐股",
+    "股票推荐",
+    "投资建议",
+    "交易建议",
+    "预测未来",
+)
+
+_IN_SCOPE_TERMS = (
+    "csv",
+    "dataset",
+    "asset",
+    "price",
+    "close",
+    "return",
+    "drawdown",
+    "volatility",
+    "metric",
+    "chart",
+    "report",
+    "analysis",
+    "compare",
+    "demo_",
+    "数据",
+    "数据集",
+    "资产",
+    "价格",
+    "收盘",
+    "收益",
+    "回撤",
+    "波动",
+    "指标",
+    "图表",
+    "报告",
+    "分析",
+    "比较",
+)
+
+
+def is_supported_analysis_request(text: str) -> bool:
+    """Conservative scope gate for Real Model requests."""
+    normalized = text.strip().lower()
+    if not normalized:
+        return False
+    if any(term in normalized for term in _OUT_OF_SCOPE_TERMS):
+        return False
+    return any(term in normalized for term in _IN_SCOPE_TERMS)
+
+
 SYSTEM_PROMPT = (
     "You are QuantLab Agent, a deterministic tool-using assistant for "
     "historical financial data analysis. You MUST drive every analysis "
     "through the registered tools rather than computing numbers "
     "yourself. Always pass exact ISO dates and tool-friendly "
     "identifiers. When a tool returns ok=false, surface the error code "
-    "and adjust your next call rather than fabricating numbers.\n\n"
+    "and adjust your next call rather than fabricating numbers. "
+    "If the user asks for anything outside uploaded CSV historical price "
+    "analysis, refuse briefly and do not answer the unrelated request.\n\n"
     "Workflow for multi-asset requests: "
-    "(1) call `inspect_dataset` for each named asset to discover the "
-    "dataset_id (UUID); "
-    "(2) use those UUIDs in `prepare_analysis` / `compute_metrics` / "
+    "(1) call `list_datasets` to discover every dataset already "
+    "imported into this session — it returns each dataset's UUID "
+    "(`dataset_id`) together with its human-readable `asset_id` and "
+    "coverage; "
+    "(2) call `inspect_dataset` for each dataset you need (passing "
+    "the UUID, not the asset name) to confirm quality; "
+    "(3) use those UUIDs in `prepare_analysis` / `compute_metrics` / "
     "`create_charts` / `build_report`. "
-    "Never use the human-readable asset_id (e.g. \"DEMO_A\") where a "
+    'Never use the human-readable asset_id (e.g. "DEMO_A") where a '
     "UUID-shaped dataset_id is expected — the schema validator will "
     "reject it with PROTOCOL_ERROR."
 )
@@ -67,6 +156,17 @@ class AgentController:
         user_request: str,
     ) -> Run:
         run = self.run_service.get_run(run_id, session_id)
+        if not is_supported_analysis_request(user_request):
+            self.run_service.mark_failed(
+                run_id,
+                session_id,
+                code="OUT_OF_SCOPE",
+                message=SUPPORTED_REQUEST_HINT,
+                retryable=False,
+                details={"user_request": user_request},
+            )
+            return self.run_service.get_run(run_id, session_id)
+
         budget = run.budgets
         tools = tool_definitions_to_openai(list(self._registry.definitions()))
         messages: list[dict[str, Any]] = [
@@ -137,15 +237,19 @@ class AgentController:
                 continue
 
             if turn.text is not None:
-                # Model produced a final natural-language answer;
-                # mark the run succeeded without binding a report.
-                # The build_report tool, if registered, will already
-                # have produced the Markdown artifact and called
-                # mark_succeeded itself.
+                # build_report marks a complete analysis as succeeded.
+                # A plain final text without report evidence is treated
+                # as a clarification / confirmation turn, not success.
                 try:
                     run_after = self.run_service.get_run(run_id, session_id)
-                    if run_after.status.value != "succeeded":
-                        self.run_service.mark_succeeded(run_id, session_id)
+                    if run_after.status.value == "succeeded":
+                        return run_after
+                    self.run_service.mark_needs_clarification(
+                        run_id,
+                        session_id,
+                        message="The model needs clarification before producing a report.",
+                        details={"model_text": turn.text},
+                    )
                 except QuantLabError as exc:
                     if exc.code is not ErrorCode.STALE_RUN:
                         raise
@@ -165,7 +269,13 @@ class AgentController:
         return self.run_service.get_run(run_id, session_id)
 
 
-__all__ = ["AgentController", "SYSTEM_PROMPT", "build_real_agent_stack"]
+__all__ = [
+    "AgentController",
+    "SYSTEM_PROMPT",
+    "SUPPORTED_REQUEST_HINT",
+    "build_real_agent_stack",
+    "is_supported_analysis_request",
+]
 
 
 def build_real_agent_stack(

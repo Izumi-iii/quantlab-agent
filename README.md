@@ -81,6 +81,11 @@ three env vars above (optionally `QUANTLAB_MODEL_TIMEOUT`,
 subcommand. No new dependency is added — `urllib` from the standard
 library handles HTTP.
 
+The agent follows a six-tool workflow: `list_datasets` discovers the
+UUID `dataset_id` for each imported asset, `inspect_dataset` confirms
+quality, then `prepare_analysis` → `compute_metrics` → `create_charts`
+→ `build_report` produces the Markdown report.
+
 ### Local web UI
 
 ```powershell
@@ -104,6 +109,40 @@ has a **Model configuration** section with `base_url`, `api_key`, and
 vars for the current browser session only; the API key is held in
 `st.session_state` and never written to disk. Use **Clear UI override**
 to fall back to env vars.
+
+### Two-pane demo UI (the `agent_chat_ui_demo.html` mockup, now real)
+
+```powershell
+.\.venv\Scripts\python.exe -m quantlab_agent.cli ui --port 8765
+```
+
+Opens at <http://127.0.0.1:8765>. The layout matches the mockup in
+`demo_output/agent_chat_ui_demo.html`: topbar, fixed left rail,
+two-pane workspace (timeline + composer on the left, switchable
+table / chart / report preview on the right). Implementation is a
+stdlib `http.server.ThreadingHTTPServer` (`webui/server.py`) plus
+the static `webui/static/index.html` — **no new HTTP dependencies**.
+Routes:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/sessions/{sid}/datasets` | Upload CSV (multipart) |
+| `GET`  | `/api/sessions/{sid}/datasets` | List imported datasets |
+| `POST` | `/api/sessions/{sid}/messages` | Send user text, drive agent |
+| `GET`  | `/api/runs/{rid}` | Run state + tool calls |
+| `GET`  | `/api/runs/{rid}/chart/{cid}.png` | Chart PNG (binary) |
+| `GET`  | `/api/runs/{rid}/report/{rid2}.md` | Report markdown |
+| `GET`  | `/api/runs/{rid}/dataset/{dsid}.csv` | Normalized CSV |
+
+The server uses the same `default_demo_controller` graph as the CLI
+demo; switching to a real-model stack is a `WebState` swap.
+
+Current limitation: this two-pane UI still uses a deterministic demo
+pipeline for `/messages`, so different natural-language prompts may drive
+the same tool path. The planned upgrade is a controlled planner layer
+(`AnalysisPlan` → validation → deterministic execution) so user requests
+can select datasets, metrics, charts, reports, clarifications, or
+out-of-scope refusals. See `Docs/PROJECT_PLAN.md §9.5`.
 
 **Note**: cancelling in the UI ("Reset UI" button) does not stop an
 already-running background analysis. The cooperative cancellation rule
@@ -137,9 +176,12 @@ quantlab-agent/
 │   ├── ports/                  # Protocol interfaces (stores, tool handler)
 │   ├── adapters/               # concrete implementations (local files, matplotlib)
 │   ├── application/            # services (Dataset, Analysis, Run, Chart, Report)
-│   ├── agent/                  # ToolRegistry, 5 tool handlers, demo controller
+│   ├── agent/                  # ToolRegistry, 6 tool handlers, demo controller
 │   ├── config.py               # env-driven configuration
-│   └── cli.py                  # `quantlab-agent demo` entry point
+│   └── cli.py                  # `quantlab-agent demo` / `chat` / `ui` entry point
+├── webui/
+│   ├── server.py               # stdlib HTTP server (no new deps)
+│   └── static/index.html       # the two-pane demo UI
 └── tests/
     ├── unit/                   # domain + application + adapter + agent unit tests
     ├── integration/            # demo flow + tool pipeline + UI smoke tests

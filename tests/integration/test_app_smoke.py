@@ -21,6 +21,9 @@ def test_app_module_imports() -> None:
     assert hasattr(app, "main")
     assert hasattr(app, "_build_controller")
     assert hasattr(app, "_render_data_form")
+    assert hasattr(app, "_render_page_header")
+    assert hasattr(app, "_render_real_dataset_import")
+    assert hasattr(app, "_run_real_agent_request")
     assert hasattr(app, "_render_results")
     assert hasattr(app, "_render_process")
 
@@ -115,9 +118,22 @@ def test_demo_controller_exposes_all_stores() -> None:
         assert getattr(controller, attr) is not None
 
 
-def test_real_model_tab_appears_when_configured(redirected_runs_dir: Path) -> None:
-    """The Real Model tab must show up when any ModelConfig resolves —
-    either env-var based or via the sidebar's UI inputs."""
+def test_agent_tab_is_first_and_always_visible(redirected_runs_dir: Path) -> None:
+    """The Natural Language Agent tab is the default workspace entry point."""
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_file(str(APP_PATH), default_timeout=30)
+    at.run()
+
+    assert not at.exception, f"App raised: {at.exception}"
+    tab_labels = [t.label for t in at.tabs]
+    assert tab_labels[:2] == ["Natural Language Agent", "Manual Run"]
+    labels = [b.label for b in at.button]
+    assert "⚙" in labels
+
+
+def test_real_model_tab_has_own_dataset_import(redirected_runs_dir: Path) -> None:
+    """Natural Language Agent should not require a prior Manual Run to import CSVs."""
     from streamlit.testing.v1 import AppTest
 
     at = AppTest.from_file(str(APP_PATH), default_timeout=30)
@@ -127,27 +143,25 @@ def test_real_model_tab_appears_when_configured(redirected_runs_dir: Path) -> No
     at.run()
 
     assert not at.exception, f"App raised: {at.exception}"
-    tab_labels = [t.label for t in at.tabs]
-    assert "Real Model" in tab_labels
+    labels = [b.label for b in at.button]
+    assert "Import datasets" in labels
+    assert "Send to model" in labels
 
 
-def test_real_model_tab_hidden_without_config(redirected_runs_dir: Path) -> None:
-    """If neither env vars nor UI inputs are set, the Real Model tab
-    must not be rendered (otherwise the user sees an empty form).
-    """
+def test_real_model_send_disabled_without_config(redirected_runs_dir: Path) -> None:
+    """Without a provider config, Natural Language Agent is visible but cannot send."""
     from streamlit.testing.v1 import AppTest
 
     at = AppTest.from_file(str(APP_PATH), default_timeout=30)
     at.run()
 
-    tab_labels = [t.label for t in at.tabs]
-    assert "Real Model" not in tab_labels
+    send_buttons = [b for b in at.button if b.label == "Send to model"]
+    assert send_buttons
+    assert send_buttons[0].disabled
 
 
-def test_real_model_tab_hidden_when_only_env_configured(
-    redirected_runs_dir: Path, monkeypatch
-) -> None:
-    """With QUANTLAB_MODEL_* env vars set, the Real Model tab must
+def test_real_model_uses_env_config_when_available(redirected_runs_dir: Path, monkeypatch) -> None:
+    """With QUANTLAB_MODEL_* env vars set, the Natural Language Agent tab must
     still appear (env falls through to ``_effective_model_config``).
     """
     monkeypatch.setenv("QUANTLAB_MODEL_BASE_URL", "https://api.example.com/v1")
@@ -159,10 +173,28 @@ def test_real_model_tab_hidden_when_only_env_configured(
     at.run()
 
     tab_labels = [t.label for t in at.tabs]
-    assert "Real Model" in tab_labels
+    assert "Natural Language Agent" in tab_labels
     # Caption should reflect env values.
     captions = [c.value for c in at.caption]
     assert any("env-model" in c for c in captions)
+
+
+def test_model_settings_page_exposes_provider_presets(redirected_runs_dir: Path) -> None:
+    """The gear opens a provider preset page with default model choices."""
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_file(str(APP_PATH), default_timeout=30)
+    at.session_state["model_settings_open"] = True
+    at.run()
+
+    assert not at.exception, f"App raised: {at.exception}"
+    markdown_values = [m.value for m in at.markdown]
+    assert any("Model Settings" in value for value in markdown_values)
+    select_labels = [s.label for s in at.selectbox]
+    assert "Provider" in select_labels
+    assert "Model" in select_labels
+    labels = [b.label for b in at.button]
+    assert "Add provider" in labels
 
 
 def test_run_service_exposes_list_tool_calls() -> None:

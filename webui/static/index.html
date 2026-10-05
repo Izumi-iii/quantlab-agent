@@ -1,0 +1,1228 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>QuantLab Agent — Web UI</title>
+  <style>
+    :root {
+      --text: #111318;
+      --muted: #687180;
+      --line: #dedede;
+      --soft-line: #eeeeee;
+      --panel: #ffffff;
+      --panel-blue: #e9f4ff;
+      --accent: #1677c8;
+      --accent-2: #ef4444;
+      --green: #2f8f46;
+      --orange: #c96b1b;
+      --shadow: 0 12px 32px rgba(16, 24, 40, 0.08);
+      --radius: 8px;
+      font-family: "Segoe UI", Inter, system-ui, -apple-system, BlinkMacSystemFont, "Microsoft YaHei", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html {
+      height: 100%;
+      overflow: hidden;
+    }
+    body {
+      margin: 0;
+      color: var(--text);
+      height: 100%;
+      overflow: hidden;
+      background:
+        linear-gradient(to right, rgba(20, 20, 20, 0.045) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(20, 20, 20, 0.045) 1px, transparent 1px),
+        #fff;
+      background-size: 22px 22px;
+    }
+    .topbar {
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 18px 0 10px;
+      background: rgba(255, 255, 255, 0.92);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--soft-line);
+      position: sticky;
+      top: 0;
+      z-index: 6;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .logo { width: 28px; height: 28px; display: grid; place-items: center; font-size: 19px; }
+    .brand-title {
+      font-size: 19px; font-weight: 600; color: var(--text);
+      text-decoration: none;
+    }
+    .brand-title:hover { color: var(--accent); }
+    .nav { display: flex; gap: 4px; margin-left: 20px; color: var(--muted); font-size: 14px; }
+    .top-actions { display: flex; align-items: center; gap: 14px; color: var(--muted); font-size: 14px; }
+    .top-actions button { border: 0; background: transparent; font-size: 20px; cursor: pointer; color: #555; }
+    .rail {
+      position: fixed; top: 56px; left: 0; bottom: 0; width: 44px;
+      border-right: 1px solid var(--soft-line);
+      background: rgba(255, 255, 255, 0.74);
+      backdrop-filter: blur(10px);
+      display: flex; flex-direction: column; align-items: center; padding-top: 14px; gap: 15px;
+      z-index: 5;
+    }
+    .rail button {
+      width: 28px; height: 28px; border-radius: 8px; border: 0; background: transparent;
+      color: #5a5a5a; font-size: 18px; cursor: pointer;
+    }
+    .rail button.active { color: #fff; background: var(--accent); }
+    .app {
+      margin-left: 44px;
+      height: calc(100vh - 56px);
+      display: grid;
+      grid-template-columns: minmax(360px, 42%) minmax(560px, 58%);
+      gap: 0;
+      overflow: hidden;
+      min-height: 0;
+    }
+    .app.preview-collapsed { grid-template-columns: minmax(520px, 1fr) 0; }
+    .workspace {
+      border-right: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.72);
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+    }
+    .workspace-header {
+      padding: 24px 28px 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: start;
+      gap: 18px;
+    }
+    .workspace-title {
+      display: flex; align-items: center; gap: 10px;
+      font-size: 20px; font-weight: 600;
+    }
+    .small-link {
+      border: 0; background: transparent; color: var(--accent); cursor: pointer;
+      font: inherit; white-space: nowrap;
+    }
+    .preview-toggle[hidden] { display: none; }
+    .content-scroll {
+      overflow: auto;
+      padding: 0 28px 18px;
+      min-height: 0;
+      overscroll-behavior: contain;
+    }
+    .content-scroll .empty-state {
+      text-align: left;
+      padding: 28px 0;
+    }
+    .section-label {
+      color: var(--muted); font-size: 13px;
+      margin: 18px 0 8px; font-weight: 600;
+    }
+    .dataset-node {
+      border-left: 2px solid #b8d9f8;
+      padding-left: 12px;
+      margin-left: 8px;
+    }
+    .dataset-card {
+      border: 1px solid #b8d9f8;
+      background: var(--panel-blue);
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin-bottom: 8px;
+      cursor: pointer;
+    }
+    .dataset-card.selected {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent);
+    }
+    .dataset-card strong { display: block; font-size: 14px; margin-bottom: 3px; }
+    .dataset-card span { color: var(--muted); font-size: 13px; }
+    .add-data {
+      border: 1px dashed var(--line); border-radius: 8px;
+      background: rgba(255, 255, 255, 0.62);
+      height: 38px; padding: 0 12px; cursor: pointer; color: #444;
+      font: inherit; width: 248px; text-align: left;
+    }
+    .timeline {
+      position: relative; margin: 22px 0 0 8px;
+      padding-left: 24px;
+      border-left: 2px solid #2f97e8;
+    }
+    .step {
+      position: relative;
+      margin-bottom: 20px;
+      max-width: 360px;
+    }
+    .step::before {
+      content: ""; position: absolute; left: -31px; top: 12px;
+      width: 9px; height: 9px; border-radius: 50%;
+      background: var(--accent); border: 3px solid #fff;
+      box-shadow: 0 0 0 1px var(--accent);
+    }
+    .step.user::before { background: var(--orange); box-shadow: 0 0 0 1px var(--orange); }
+    .step.tool::before { background: var(--green); box-shadow: 0 0 0 1px var(--green); }
+    .bubble {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.92);
+      padding: 10px 12px;
+      line-height: 1.58;
+      font-size: 14px;
+      box-shadow: 0 8px 18px rgba(15, 23, 42, 0.04);
+    }
+    .bubble.selected { border-color: var(--accent); background: #eef7ff; box-shadow: 0 0 0 1px var(--accent); }
+    .bubble.user { background: #fff4ed; border-color: #ead6c7; }
+    .bubble.tool-ok { background: #eef9f0; border-color: #c6e6cf; }
+    .bubble.tool-failed { background: #fff1f1; border-color: #f0c0c0; }
+    .tool-details {
+      margin-bottom: 20px;
+      max-width: 420px;
+    }
+    .tool-details summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 14px;
+      margin-bottom: 14px;
+      user-select: none;
+    }
+    .tool-details summary:hover { color: var(--accent); }
+    .thumb-chart {
+      height: 110px;
+      border: 1px solid var(--soft-line);
+      border-radius: 6px;
+      margin-top: 8px;
+      background:
+        linear-gradient(160deg, transparent 47%, rgba(22, 119, 200, 0.78) 48%, transparent 50%),
+        linear-gradient(to right, transparent 24%, rgba(0,0,0,.06) 25%, transparent 26%),
+        linear-gradient(to bottom, transparent 24%, rgba(0,0,0,.06) 25%, transparent 26%),
+        #fff;
+      background-size: auto, 52px 100%, 100% 28px, auto;
+    }
+    .thumb-chart img { width: 100%; height: 100%; object-fit: contain; border-radius: 6px; }
+    .tool-note {
+      margin-top: 8px; color: var(--muted); font-size: 13px;
+    }
+    .explain-box {
+      border: 1px solid #8dc5f4; background: #f0f8ff;
+      border-radius: 8px; padding: 12px; line-height: 1.62; font-size: 14px;
+    }
+    .explain-box ul { margin: 8px 0 0 18px; padding: 0; }
+    .composer {
+      padding: 12px 20px 18px;
+      border-top: 1px solid var(--soft-line);
+      background: rgba(255, 255, 255, 0.9);
+    }
+    .app.preview-collapsed .composer {
+      width: 66.666%;
+      min-width: 620px;
+      border-right: 1px solid var(--soft-line);
+    }
+    .suggestions { display: flex; flex-wrap: wrap; gap: 7px; margin: 0 0 8px; }
+    .chip {
+      border: 1px solid var(--line); background: #fff;
+      border-radius: 8px; padding: 7px 10px; color: #4f5663;
+      cursor: pointer; font: inherit; font-size: 13px;
+    }
+    .input-card {
+      border: 1px solid #aad5fb; border-radius: 12px;
+      background: #fff;
+      box-shadow: 0 10px 24px rgba(22, 119, 200, 0.12);
+      overflow: hidden;
+    }
+    .input-card textarea {
+      width: 100%; height: 74px; border: 0; outline: 0;
+      resize: none; padding: 12px 14px; font: inherit; background: transparent;
+    }
+    .input-tools {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 10px; color: var(--muted); font-size: 13px;
+    }
+    .attach-btn {
+      border: 0; background: transparent; cursor: pointer; color: var(--muted);
+      font: inherit; padding: 4px 6px; border-radius: 6px;
+    }
+    .attach-btn:hover { background: #f1f5f9; color: var(--accent); }
+    .send {
+      width: 30px; height: 30px; border: 0; border-radius: 8px;
+      background: var(--accent); color: #fff; cursor: pointer; font-size: 17px;
+    }
+    .send:disabled { background: #b3d3ee; cursor: not-allowed; }
+    .preview {
+      background: rgba(255, 255, 255, 0.82);
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      min-width: 0;
+      min-height: 0;
+    }
+    .app.preview-collapsed .preview { display: none; }
+    .preview-top {
+      height: 56px;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 22px;
+      border-bottom: 1px solid var(--soft-line);
+      background: rgba(255, 255, 255, 0.76);
+    }
+    .preview-title {
+      font-size: 18px; font-weight: 600;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .preview-actions { display: flex; align-items: center; gap: 8px; }
+    .icon-btn {
+      width: 34px; height: 34px; border-radius: 50%;
+      border: 1px solid var(--line); background: #fff;
+      cursor: pointer; color: #555;
+      box-shadow: 0 6px 14px rgba(15, 23, 42, 0.06);
+    }
+    .preview-body {
+      overflow: auto;
+      display: grid;
+      align-content: start;
+      justify-content: center;
+      padding: 30px 22px;
+      min-height: 0;
+      overscroll-behavior: contain;
+    }
+    .table-wrap, .chart-wrap, .report-wrap {
+      width: min(760px, 100%);
+      display: none;
+    }
+    .table-wrap.active, .chart-wrap.active, .report-wrap.active { display: block; }
+    .preview-heading {
+      display: flex; justify-content: flex-start; align-items: end; gap: 18px; margin-bottom: 12px;
+    }
+    .preview-heading h2 { margin: 0 0 4px; font-size: 21px; }
+    .preview-heading p { margin: 0; color: var(--muted); font-size: 13px; }
+    .collapsible-title {
+      cursor: pointer;
+      user-select: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      border-radius: 6px;
+    }
+    .collapsible-title:hover { color: var(--accent); }
+    .table-wrap.collapsed #tableContainer {
+      display: none;
+    }
+    table {
+      border-collapse: separate; border-spacing: 0;
+      width: 100%; border: 1px solid var(--line);
+      border-radius: 8px; overflow: hidden;
+      background: #fff; font-size: 14px;
+    }
+    th, td { border-bottom: 1px solid var(--soft-line); padding: 8px 12px; text-align: left; }
+    th { background: #e9f4ff; font-weight: 500; border-bottom: 2px solid var(--accent); }
+    td:first-child, th:first-child { width: 70px; text-align: center; color: var(--muted); background: #fafafa; }
+    tr:last-child td { border-bottom: 0; }
+    .chart-card {
+      border: 1px solid var(--line); border-radius: 12px;
+      background: #fff; padding: 18px 18px 14px;
+    }
+    .chart-toolbar {
+      display: flex; align-items: center; gap: 14px;
+      color: var(--muted); font-size: 13px; margin-bottom: 10px;
+    }
+    .big-chart {
+      height: 300px;
+      border-left: 2px solid #9ca3af;
+      border-bottom: 2px solid #9ca3af;
+      margin: 18px 34px 14px;
+      position: relative;
+      background:
+        linear-gradient(to right, transparent 19%, rgba(0,0,0,.12) 20%, transparent 21%),
+        linear-gradient(to bottom, transparent 24%, rgba(0,0,0,.12) 25%, transparent 26%);
+      background-size: 78px 100%, 100% 54px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .big-chart img { max-width: 100%; max-height: 100%; object-fit: contain; }
+    .chart-label-y {
+      position: absolute; left: -44px; top: 98px;
+      transform: rotate(-90deg); font-weight: 600;
+    }
+    .chart-label-x {
+      position: absolute; bottom: -34px; left: 45%; font-weight: 600;
+    }
+    .report-wrap {
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 10px;
+      padding: 28px 34px;
+      line-height: 1.72;
+      box-shadow: 0 10px 28px rgba(15, 23, 42, 0.05);
+    }
+    .report-document {
+      color: #151922;
+      font-size: 15px;
+    }
+    .report-document h1 {
+      margin: 0 0 20px;
+      font-size: 28px;
+      line-height: 1.25;
+    }
+    .report-document h2 {
+      margin: 26px 0 10px;
+      padding-top: 18px;
+      border-top: 1px solid var(--soft-line);
+      font-size: 21px;
+      line-height: 1.35;
+    }
+    .report-document h2:first-child { border-top: 0; padding-top: 0; }
+    .report-document h3 {
+      margin: 20px 0 8px;
+      font-size: 17px;
+    }
+    .report-document p { margin: 8px 0; }
+    .report-document ul {
+      margin: 8px 0 14px 20px;
+      padding: 0;
+    }
+    .report-document li { margin: 6px 0; }
+    .report-document code {
+      background: #f2f5f8;
+      border: 1px solid #e3e8ef;
+      border-radius: 5px;
+      padding: 1px 5px;
+      font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+      font-size: 0.92em;
+    }
+    .report-empty {
+      color: var(--muted);
+      text-align: left;
+      padding: 22px 0;
+    }
+    .preview-footer {
+      height: 58px;
+      display: flex; align-items: center; justify-content: center;
+      border-top: 1px solid var(--soft-line);
+      gap: 16px; color: var(--muted);
+    }
+    .footer-btn {
+      border: 1px solid var(--line); background: #fff;
+      border-radius: 8px; padding: 8px 12px;
+      cursor: pointer; color: #4c5565; font: inherit;
+    }
+    .footer-btn.active { color: var(--accent); border-color: #b7dcff; background: #f4faff; }
+    .footer-btn:disabled {
+      color: #a0a7b2; background: #f7f7f7; cursor: not-allowed;
+    }
+    .empty-state {
+      color: var(--muted); text-align: center; padding: 40px 20px;
+      font-size: 14px; line-height: 1.6;
+    }
+    .status-pill {
+      display: inline-block; padding: 1px 8px; border-radius: 999px;
+      font-size: 12px; background: #f0f0f0; color: #555;
+    }
+    .status-pill.succeeded { background: #e7f6ec; color: #2f8f46; }
+    .status-pill.failed { background: #fde7e7; color: #b94545; }
+    .status-pill.running { background: #e9f4ff; color: #1677c8; }
+    .modal-backdrop {
+      position: fixed; inset: 0; background: rgba(17, 19, 24, 0.28);
+      display: none; align-items: center; justify-content: center; z-index: 20;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      width: min(520px, calc(100vw - 36px)); background: #fff;
+      border: 1px solid var(--line); border-radius: 12px;
+      box-shadow: var(--shadow); padding: 20px;
+    }
+    .modal header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+    .modal h2 { margin: 0; font-size: 20px; }
+    .modal-close {
+      border: 1px solid var(--line); background: #fff; border-radius: 8px;
+      width: 32px; height: 32px; cursor: pointer;
+    }
+    .settings-grid { display: grid; gap: 12px; }
+    .settings-grid label { display: grid; gap: 6px; color: var(--muted); font-size: 13px; }
+    .settings-grid input, .settings-grid select {
+      border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font: inherit;
+    }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+    .modal-actions button {
+      border: 1px solid var(--line); background: #fff; border-radius: 8px;
+      padding: 9px 12px; cursor: pointer; font: inherit;
+    }
+    .modal-actions .primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    @media (max-width: 1080px) {
+      .app { grid-template-columns: 1fr; height: auto; }
+      .app.preview-collapsed { grid-template-columns: 1fr; }
+      .app.preview-collapsed .composer { width: 100%; min-width: 0; border-right: 0; }
+      .workspace { min-height: 780px; border-right: 0; border-bottom: 1px solid var(--line); }
+      .preview { min-height: 720px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">📈</div>
+      <a class="brand-title" href="https://github.com/Izumi-iii/quantlab-agent" target="_blank" rel="noopener noreferrer">QuantLab Agent</a>
+      <nav class="nav" aria-label="Main">
+        <span>Natural Language Agent</span>
+      </nav>
+    </div>
+    <div class="top-actions">
+      <span id="modelBadge">demo mode</span>
+      <button title="Model settings" id="settingsBtn">⚙</button>
+    </div>
+  </header>
+
+  <aside class="rail" aria-label="Workspace tools">
+    <button class="active" title="New analysis" data-rail="new">＋</button>
+    <button title="Datasets" data-rail="datasets">▣</button>
+    <button title="Reports" data-rail="report">◫</button>
+    <button title="Process" data-rail="process">◷</button>
+  </aside>
+
+  <main class="app" id="appShell">
+    <section class="workspace">
+      <header class="workspace-header">
+        <div class="workspace-title">
+          <span id="wsTitle">分析工作区</span>
+          <button class="small-link" id="viewChartLink" hidden>view chart →</button>
+        </div>
+        <div>
+          <button class="small-link preview-toggle" id="openPreviewBtn" hidden>打开预览 →</button>
+          <button class="small-link" id="resetBtn">Reset</button>
+        </div>
+      </header>
+
+      <div class="content-scroll">
+        <div class="section-label">工作区</div>
+        <div class="dataset-node" id="datasetList">
+          <div class="empty-state">还没有数据集，点击下方"添加数据"上传 CSV。</div>
+        </div>
+        <button class="add-data" id="addDataBtn">＋ 添加更多数据</button>
+        <input type="file" id="filePicker" accept=".csv" hidden />
+
+        <div class="timeline" id="timeline">
+          <div class="empty-state" id="timelineEmpty">向 Agent 提问后，过程会出现在这里。</div>
+        </div>
+
+        <div class="explain-box" id="explainBox" hidden>
+          <strong>说明</strong>
+          <ul id="explainList"></ul>
+        </div>
+      </div>
+
+      <footer class="composer">
+        <div class="suggestions">
+          <button class="chip" data-prompt="分析这个数据集的区间收益和最大回撤">分析区间收益和最大回撤</button>
+          <button class="chip" data-prompt="比较两个资产的走势">比较两个资产</button>
+          <button class="chip" data-prompt="数据质量怎么样？">数据质量如何？</button>
+        </div>
+        <div class="input-card">
+          <textarea id="composerInput" placeholder="有什么问题，有什么想要探索的？"></textarea>
+          <div class="input-tools">
+            <button class="attach-btn" id="attachBtn" title="Upload CSV">📎 上传 CSV</button>
+            <button class="send" id="sendBtn">↑</button>
+          </div>
+        </div>
+      </footer>
+    </section>
+
+    <section class="preview">
+      <header class="preview-top">
+        <div class="preview-title" id="previewTitle">预览 <span style="color: var(--muted);">⌄</span></div>
+        <div class="preview-actions">
+          <button class="icon-btn" title="Close" id="closePreviewBtn">×</button>
+        </div>
+      </header>
+
+      <div class="preview-body">
+        <div class="table-wrap active" id="tableView">
+          <div class="preview-heading">
+            <div>
+              <h2 id="tableTitle" class="collapsible-title" title="点击收起或展开表格">
+                <span id="tableTitleText">数据表</span>
+                <span id="tableCollapseMark">⌄</span>
+              </h2>
+              <p id="tableMeta">尚未选择数据集。</p>
+            </div>
+          </div>
+          <div id="tableContainer">
+            <div class="empty-state">选择左侧的数据集或表格视图以查看内容。</div>
+          </div>
+        </div>
+
+        <div class="chart-wrap" id="chartView">
+          <div class="chart-card">
+            <div class="chart-toolbar">
+              🔍 ━━━━━ ◉ ━━━━━ 🔎
+              <span>📊 line</span>
+              <span>Curve Default</span>
+              <span>Zero Y ●</span>
+              <span>X as Temporal</span>
+            </div>
+            <div class="big-chart" id="chartContainer">
+              <div class="empty-state">尚无图表。完成分析后，归一化价格和回撤图会出现在这里。</div>
+            </div>
+            <p style="text-align:center;color:var(--muted);">AI 生成结果可能不准确，请自行核查！</p>
+          </div>
+        </div>
+
+        <div class="report-wrap" id="reportView">
+          <div class="report-document" id="reportContainer">
+            <div class="report-empty">尚无报告。运行一次完整分析后，报告会出现于此。</div>
+          </div>
+        </div>
+      </div>
+
+      <footer class="preview-footer">
+        <button class="footer-btn active" data-view="table">Quick table</button>
+        <button class="footer-btn" data-view="chart">Quick chart</button>
+        <button class="footer-btn" data-view="report">Report</button>
+        <button class="footer-btn" id="downloadCsvBtn">Download CSV</button>
+        <span id="rowCount">0 行</span>
+        <span id="runStatus"></span>
+      </footer>
+    </section>
+  </main>
+
+  <div class="modal-backdrop" id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <div class="modal">
+      <header>
+        <h2 id="settingsTitle">Model settings</h2>
+        <button class="modal-close" id="settingsCloseBtn" aria-label="Close">×</button>
+      </header>
+      <div class="settings-grid">
+        <label>
+          Provider
+          <select id="providerSelect">
+            <option value="deepseek">DeepSeek</option>
+            <option value="openai">OpenAI compatible</option>
+            <option value="custom">Custom provider</option>
+          </select>
+        </label>
+        <label>
+          Base URL
+          <input id="baseUrlInput" placeholder="https://api.deepseek.com/v1" />
+        </label>
+        <label>
+          Model
+          <select id="modelSelect">
+            <option value="deepseek-chat">deepseek-chat</option>
+            <option value="deepseek-reasoner">deepseek-reasoner</option>
+          </select>
+        </label>
+        <label>
+          API Key
+          <input id="apiKeyInput" type="password" placeholder="保存在本浏览器 localStorage" />
+        </label>
+      </div>
+      <div class="modal-actions">
+        <button id="clearSettingsBtn">Clear</button>
+        <button id="saveSettingsBtn" class="primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    "use strict";
+
+    // ----- session management --------------------------------------------
+
+    const SESSION_KEY = "quantlab.session_id";
+    function getSessionId() {
+      let sid = localStorage.getItem(SESSION_KEY);
+      if (!sid) {
+        sid = crypto.randomUUID();
+        localStorage.setItem(SESSION_KEY, sid);
+      }
+      return sid;
+    }
+    const sessionId = getSessionId();
+
+    // ----- state ----------------------------------------------------------
+
+    const state = {
+      datasets: [],
+      runs: [],
+      activeRunId: null,
+      activeDatasetId: null,
+      csvCache: null,
+      csvRows: [],
+      activeView: "table",
+      hasChart: false,
+      hasReport: false,
+    };
+
+    // ----- view switching (preserved from demo) --------------------------
+
+    const views = {
+      table: document.querySelector("#tableView"),
+      chart: document.querySelector("#chartView"),
+      report: document.querySelector("#reportView"),
+    };
+    const footerButtons = document.querySelectorAll(".footer-btn[data-view]");
+    function setPreviewCollapsed(collapsed) {
+      document.querySelector("#appShell").classList.toggle("preview-collapsed", collapsed);
+      document.querySelector("#openPreviewBtn").hidden = !collapsed;
+    }
+
+    function showView(name) {
+      setPreviewCollapsed(false);
+      state.activeView = name;
+      Object.entries(views).forEach(([key, node]) => {
+        node.classList.toggle("active", key === name);
+      });
+      footerButtons.forEach((button) => {
+        button.classList.toggle("active", button.dataset.view === name);
+      });
+    }
+    footerButtons.forEach((node) => {
+      node.addEventListener("click", () => showView(node.dataset.view));
+    });
+
+    // ----- API helpers ----------------------------------------------------
+
+    async function apiGet(path) {
+      const res = await fetch(path);
+      if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+      return res.json();
+    }
+    async function apiPostJson(path, body) {
+      const res = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const detail = await res.text();
+        throw new Error(`${res.status} ${detail}`);
+      }
+      return res.json();
+    }
+    async function apiUpload(path, formData) {
+      const res = await fetch(path, { method: "POST", body: formData });
+      if (!res.ok) {
+        const detail = await res.text();
+        throw new Error(`${res.status} ${detail}`);
+      }
+      return res.json();
+    }
+
+    // ----- loaders --------------------------------------------------------
+
+    async function loadConfig() {
+      try {
+        const cfg = await apiGet("/api/config");
+        const badge = document.querySelector("#modelBadge");
+        const local = loadLocalModelSettings();
+        if (local && local.model) {
+          badge.textContent = local.model;
+        } else if (cfg.env_configured) {
+          badge.textContent = cfg.env_model;
+        } else {
+          badge.textContent = "demo mode";
+        }
+      } catch (e) {
+        console.warn("config load failed:", e);
+      }
+    }
+
+    async function loadDatasets() {
+      try {
+        const data = await apiGet(`/api/sessions/${sessionId}/datasets`);
+        state.datasets = data.datasets;
+        renderDatasets();
+      } catch (e) {
+        console.warn("datasets load failed:", e);
+      }
+    }
+
+    // ----- renderers ------------------------------------------------------
+
+    function renderDatasets() {
+      const list = document.querySelector("#datasetList");
+      if (!state.datasets.length) {
+        list.innerHTML = '<div class="empty-state">还没有数据集，点击下方"添加数据"上传 CSV。</div>';
+        document.querySelector("#rowCount").textContent = "0 行";
+        refreshControls();
+        return;
+      }
+      const cards = state.datasets.map((d) => `
+        <div class="dataset-card ${d.dataset_id === state.activeDatasetId ? "selected" : ""}" data-dataset-id="${d.dataset_id}">
+          <strong>${escapeHtml(d.asset_id)}</strong>
+          <span>${d.row_count} 行 · ${d.date_min} → ${d.date_max}</span>
+        </div>
+      `).join("");
+      list.innerHTML = cards;
+      // Wire clicks on dataset cards to load table view.
+      list.querySelectorAll(".dataset-card").forEach((card) => {
+        card.addEventListener("click", () => {
+          showView("table");
+          loadDatasetTable(card.dataset.datasetId);
+        });
+      });
+      refreshControls();
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, (c) => (
+        { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+      ));
+    }
+
+    function statusPill(status) {
+      return `<span class="status-pill ${status}">${status}</span>`;
+    }
+
+    function refreshControls() {
+      const chartBtn = document.querySelector('.footer-btn[data-view="chart"]');
+      const reportBtn = document.querySelector('.footer-btn[data-view="report"]');
+      const csvBtn = document.querySelector("#downloadCsvBtn");
+      chartBtn.disabled = !state.hasChart;
+      reportBtn.disabled = !state.hasReport;
+      csvBtn.disabled = !state.csvCache;
+    }
+
+    function renderTimeline(toolCalls, runStatus) {
+      const timeline = document.querySelector("#timeline");
+      const empty = document.querySelector("#timelineEmpty");
+      if (empty) empty.remove();
+      const succeeded = toolCalls.filter((tc) => tc.status === "succeeded").length;
+      const failed = toolCalls.length - succeeded;
+      const rows = toolCalls.map((tc) => {
+        const cls = tc.status === "succeeded" ? "tool-ok" : "tool-failed";
+        const errLine = tc.error_code
+          ? `<div class="tool-note">error: ${escapeHtml(tc.error_code)}</div>` : "";
+        const argsLine = `<div class="tool-note">args: ${escapeHtml(JSON.stringify(tc.arguments || {}))}</div>`;
+        let chartHtml = "";
+        if (tc.tool_name === "create_charts" && tc.ok && tc.data && tc.data.chart_ids && tc.data.chart_ids.length) {
+          // After create_charts, surface the first chart as a thumbnail.
+          chartHtml = `<div class="thumb-chart"><img src="${chartImgUrl(tc, 0)}" alt="chart"></div>`;
+        }
+        return `
+          <div class="step tool">
+            <div class="bubble ${cls}">
+              <strong>${escapeHtml(tc.tool_name)}</strong> ${statusPill(tc.status)}
+              ${argsLine}
+              ${errLine}
+              ${chartHtml}
+            </div>
+          </div>
+        `;
+      }).join("");
+      const toolDetails = rows
+        ? `<details class="tool-details">
+             <summary>工具调用链：${toolCalls.length} 步，${succeeded} 成功${failed ? `，${failed} 失败` : ""}</summary>
+             ${rows}
+           </details>`
+        : "";
+      // Append a final user-facing summary bubble when the run succeeded.
+      const summary = (runStatus === "succeeded")
+        ? `<div class="step"><div class="bubble selected" data-view="report">已完成分析。点击此处查看报告。</div></div>`
+        : (runStatus === "failed"
+            ? `<div class="step"><div class="bubble tool-failed">分析失败，请查看上面的错误信息。</div></div>`
+            : "");
+      timeline.insertAdjacentHTML("beforeend", summary + toolDetails);
+      timeline.scrollTop = timeline.scrollHeight;
+    }
+
+    function chartImgUrl(toolCallRecord, idx) {
+      // We need the run id and chart id. toolCallRecord.data.chart_ids[idx] is the
+      // chart id; toolCallRecord lives in the current run whose id we have in
+      // state.activeRunId.
+      const runId = state.activeRunId;
+      const chartId = toolCallRecord.data.chart_ids[idx];
+      return `/api/runs/${runId}/chart/${chartId}.png`;
+    }
+
+    async function loadRun(runId) {
+      try {
+        const data = await apiGet(`/api/runs/${runId}`);
+        state.activeRunId = runId;
+        renderRunIntoPreview(data);
+      } catch (e) {
+        console.warn("run load failed:", e);
+      }
+    }
+
+    function renderRunIntoPreview({ run, tool_calls }) {
+      // Update status pill in footer.
+      const statusEl = document.querySelector("#runStatus");
+      statusEl.innerHTML = statusPill(run.status);
+
+      // First chart image -> preview chart view.
+      const chartTool = (tool_calls || []).find((t) =>
+        t.tool_name === "create_charts" && t.ok && t.data && t.data.chart_ids && t.data.chart_ids.length
+      );
+      if (chartTool && chartTool.data.chart_ids.length) {
+        const chartId = chartTool.data.chart_ids[0];
+        const container = document.querySelector("#chartContainer");
+        container.innerHTML = `<img src="/api/runs/${run.run_id}/chart/${chartId}.png" alt="chart">`;
+        document.querySelector("#previewTitle").firstChild.textContent =
+          `Run ${run.run_id.slice(0, 8)}…`;
+        state.hasChart = true;
+      }
+      // Report markdown -> preview report view.
+      if (run.report_id) {
+        fetch(`/api/runs/${run.run_id}/report/${run.report_id}.md`)
+          .then((r) => r.ok ? r.text() : "")
+          .then((md) => { renderMarkdownReport(md); });
+        document.querySelector("#viewChartLink").hidden = false;
+        state.hasReport = true;
+      }
+      refreshControls();
+    }
+
+    function renderInlineMarkdown(text) {
+      let html = escapeHtml(text);
+      html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+      html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+      return html;
+    }
+
+    function renderMarkdownReport(markdown) {
+      const container = document.querySelector("#reportContainer");
+      const lines = markdown.split(/\r?\n/);
+      const html = [];
+      let listOpen = false;
+      const closeList = () => {
+        if (listOpen) {
+          html.push("</ul>");
+          listOpen = false;
+        }
+      };
+
+      lines.forEach((rawLine) => {
+        const line = rawLine.trim();
+        if (!line) {
+          closeList();
+          return;
+        }
+        if (line.startsWith("### ")) {
+          closeList();
+          html.push(`<h3>${renderInlineMarkdown(line.slice(4))}</h3>`);
+        } else if (line.startsWith("## ")) {
+          closeList();
+          html.push(`<h2>${renderInlineMarkdown(line.slice(3))}</h2>`);
+        } else if (line.startsWith("# ")) {
+          closeList();
+          html.push(`<h1>${renderInlineMarkdown(line.slice(2))}</h1>`);
+        } else if (line.startsWith("- ")) {
+          if (!listOpen) {
+            html.push("<ul>");
+            listOpen = true;
+          }
+          html.push(`<li>${renderInlineMarkdown(line.slice(2))}</li>`);
+        } else {
+          closeList();
+          html.push(`<p>${renderInlineMarkdown(line)}</p>`);
+        }
+      });
+      closeList();
+      container.innerHTML = html.length
+        ? html.join("")
+        : '<div class="report-empty">尚无报告。运行一次完整分析后，报告会出现于此。</div>';
+    }
+
+    async function loadDatasetTable(datasetId) {
+      state.activeDatasetId = datasetId;
+      renderDatasets();
+      try {
+        const text = await fetch(`/api/sessions/${sessionId}/datasets/${datasetId}.csv`).then((r) => {
+          if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+          return r.text();
+        });
+        state.csvCache = text;
+        setTableCollapsed(false);
+        renderCsvTable(text);
+        const meta = state.datasets.find((d) => d.dataset_id === datasetId);
+        if (meta) {
+          document.querySelector("#tableTitleText").textContent = meta.asset_id;
+          document.querySelector("#tableMeta").textContent =
+            `${meta.row_count} 行 · ${meta.date_min} → ${meta.date_max}`;
+          document.querySelector("#rowCount").textContent = `${meta.row_count} 行`;
+        }
+        showView("table");
+        refreshControls();
+      } catch (e) {
+        console.warn("csv load failed:", e);
+        document.querySelector("#tableContainer").innerHTML =
+          `<div class="empty-state">CSV 读取失败：${escapeHtml(e.message)}</div>`;
+      }
+    }
+
+    function setTableCollapsed(collapsed) {
+      document.querySelector("#tableView").classList.toggle("collapsed", collapsed);
+      document.querySelector("#tableCollapseMark").textContent = collapsed ? "›" : "⌄";
+    }
+
+    function parseCsvLine(line) {
+      const cells = [];
+      let value = "";
+      let inQuotes = false;
+      for (let i = 0; i < line.length; i += 1) {
+        const ch = line[i];
+        if (ch === '"' && line[i + 1] === '"') {
+          value += '"';
+          i += 1;
+        } else if (ch === '"') {
+          inQuotes = !inQuotes;
+        } else if (ch === "," && !inQuotes) {
+          cells.push(value);
+          value = "";
+        } else {
+          value += ch;
+        }
+      }
+      cells.push(value);
+      return cells;
+    }
+
+    function renderCsvTable(csvText) {
+      const lines = csvText.split(/\r?\n/).filter(Boolean);
+      if (!lines.length) return;
+      const head = parseCsvLine(lines[0]);
+      const rows = lines.slice(1).map((line) => parseCsvLine(line));
+      state.csvRows = rows;
+      const body = rows.map((cells, idx) => {
+        return `<tr><td>${idx + 1}</td>${cells.map((c) => `<td>${escapeHtml(c)}</td>`).join("")}</tr>`;
+      }).join("");
+      document.querySelector("#tableContainer").innerHTML = `
+        <table>
+          <thead><tr><th>#</th>${head.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead>
+          <tbody>${body}</tbody>
+        </table>
+      `;
+      document.querySelector("#rowCount").textContent = `${rows.length} 行`;
+    }
+
+    // ----- event handlers -------------------------------------------------
+
+    document.querySelector("#addDataBtn").addEventListener("click", () => {
+      document.querySelector("#filePicker").click();
+    });
+    document.querySelector("#attachBtn").addEventListener("click", () => {
+      document.querySelector("#filePicker").click();
+    });
+
+    document.querySelector("#filePicker").addEventListener("change", async (ev) => {
+      const file = ev.target.files[0];
+      if (!file) return;
+      const assetId = prompt(`Asset ID for "${file.name}"?`, file.name.replace(/\.csv$/i, "")) || "";
+      if (!assetId) return;
+      const form = new FormData();
+      form.append("file", file);
+      form.append("asset_id", assetId);
+      form.append("price_basis", "forward_adjusted");
+      try {
+        const uploaded = await apiUpload(`/api/sessions/${sessionId}/datasets`, form);
+        await loadDatasets();
+        if (uploaded.dataset && uploaded.dataset.dataset_id) {
+          await loadDatasetTable(uploaded.dataset.dataset_id);
+        }
+      } catch (e) {
+        alert(`Upload failed: ${e.message}`);
+      } finally {
+        ev.target.value = ""; // allow re-uploading the same file
+      }
+    });
+
+    document.querySelector("#sendBtn").addEventListener("click", sendMessage);
+    document.querySelector("#composerInput").addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) {
+        ev.preventDefault();
+        sendMessage();
+      }
+    });
+
+    document.querySelectorAll(".chip").forEach((chip) => {
+      chip.addEventListener("click", () => {
+        document.querySelector("#composerInput").value = chip.dataset.prompt;
+        document.querySelector("#composerInput").focus();
+      });
+    });
+
+    document.querySelector("#resetBtn").addEventListener("click", () => {
+      document.querySelector("#timeline").innerHTML =
+        '<div class="empty-state" id="timelineEmpty">向 Agent 提问后，过程会出现在这里。</div>';
+      document.querySelector("#explainBox").hidden = true;
+      state.activeRunId = null;
+      state.hasChart = false;
+      state.hasReport = false;
+      document.querySelector("#chartContainer").innerHTML =
+        '<div class="empty-state">尚无图表。完成分析后，归一化价格和回撤图会出现在这里。</div>';
+      document.querySelector("#reportContainer").innerHTML =
+        '<div class="report-empty">尚无报告。运行一次完整分析后，报告会出现于此。</div>';
+      document.querySelector("#viewChartLink").hidden = true;
+      document.querySelector("#runStatus").innerHTML = "";
+      refreshControls();
+    });
+
+    document.querySelector("#downloadCsvBtn").addEventListener("click", () => {
+      if (!state.csvCache) {
+        alert("请先在 Quick table 视图里选择一个数据集。");
+        return;
+      }
+      const blob = new Blob([state.csvCache], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "normalized.csv";
+      const meta = state.datasets.find((d) => d.dataset_id === state.activeDatasetId);
+      if (meta && meta.asset_id) a.download = `${meta.asset_id}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    document.querySelector("#viewChartLink").addEventListener("click", () => {
+      showView("chart");
+    });
+
+    document.querySelector("#tableTitle").addEventListener("click", () => {
+      const collapsed = document.querySelector("#tableView").classList.contains("collapsed");
+      setTableCollapsed(!collapsed);
+    });
+
+    document.querySelector("#closePreviewBtn").addEventListener("click", () => {
+      setPreviewCollapsed(true);
+    });
+
+    document.querySelector("#openPreviewBtn").addEventListener("click", () => {
+      showView(state.activeView || "table");
+    });
+
+    document.querySelector("#timeline").addEventListener("click", (ev) => {
+      const target = ev.target.closest("[data-view]");
+      if (target && target.dataset.view) showView(target.dataset.view);
+    });
+
+    document.querySelectorAll(".rail button[data-rail]").forEach((button) => {
+      button.addEventListener("click", () => {
+        document.querySelectorAll(".rail button[data-rail]").forEach((b) => {
+          b.classList.toggle("active", b === button);
+        });
+        const action = button.dataset.rail;
+        if (action === "new") {
+          document.querySelector("#resetBtn").click();
+          document.querySelector("#composerInput").focus();
+        } else if (action === "datasets") {
+          const first = state.activeDatasetId || (state.datasets[0] && state.datasets[0].dataset_id);
+          if (first) loadDatasetTable(first);
+          else showView("table");
+        } else if (action === "report") {
+          showView("report");
+        } else if (action === "process") {
+          document.querySelector("#timeline").scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+      });
+    });
+
+    async function sendMessage() {
+      const input = document.querySelector("#composerInput");
+      const text = input.value.trim();
+      if (!text) return;
+      const sendBtn = document.querySelector("#sendBtn");
+      sendBtn.disabled = true;
+      const timeline = document.querySelector("#timeline");
+      // Add the user message bubble.
+      timeline.insertAdjacentHTML("beforeend",
+        `<div class="step user"><div class="bubble user">${escapeHtml(text)}</div></div>`);
+      input.value = "";
+      try {
+        const data = await apiPostJson(`/api/sessions/${sessionId}/messages`, { text });
+        state.activeRunId = data.run.run_id;
+        renderTimeline(data.tool_calls, data.run.status);
+        renderRunIntoPreview(data);
+      } catch (e) {
+        timeline.insertAdjacentHTML("beforeend",
+          `<div class="step"><div class="bubble tool-failed">请求失败：${escapeHtml(e.message)}</div></div>`);
+      } finally {
+        sendBtn.disabled = false;
+      }
+    }
+
+    // ----- local model settings ------------------------------------------
+
+    const MODEL_SETTINGS_KEY = "quantlab.webui.model_settings";
+    const PROVIDERS = {
+      deepseek: {
+        baseUrl: "https://api.deepseek.com/v1",
+        models: ["deepseek-chat", "deepseek-reasoner"],
+      },
+      openai: {
+        baseUrl: "https://api.openai.com/v1",
+        models: ["gpt-5", "gpt-5-mini", "gpt-4.1"],
+      },
+      custom: {
+        baseUrl: "",
+        models: ["custom-model"],
+      },
+    };
+
+    function loadLocalModelSettings() {
+      try {
+        return JSON.parse(localStorage.getItem(MODEL_SETTINGS_KEY) || "null");
+      } catch (_e) {
+        return null;
+      }
+    }
+
+    function saveLocalModelSettings(settings) {
+      localStorage.setItem(MODEL_SETTINGS_KEY, JSON.stringify(settings));
+      document.querySelector("#modelBadge").textContent = settings.model || "demo mode";
+    }
+
+    function renderModelOptions(provider, selectedModel) {
+      const models = PROVIDERS[provider].models;
+      const select = document.querySelector("#modelSelect");
+      select.innerHTML = models.map((m) =>
+        `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`
+      ).join("");
+      select.value = selectedModel && models.includes(selectedModel) ? selectedModel : models[0];
+    }
+
+    function openSettingsModal() {
+      const settings = loadLocalModelSettings() || {};
+      const provider = settings.provider || "deepseek";
+      document.querySelector("#providerSelect").value = provider;
+      renderModelOptions(provider, settings.model);
+      document.querySelector("#baseUrlInput").value = settings.baseUrl || PROVIDERS[provider].baseUrl;
+      document.querySelector("#apiKeyInput").value = settings.apiKey || "";
+      document.querySelector("#settingsModal").classList.add("open");
+    }
+
+    function closeSettingsModal() {
+      document.querySelector("#settingsModal").classList.remove("open");
+    }
+
+    document.querySelector("#settingsBtn").addEventListener("click", openSettingsModal);
+    document.querySelector("#settingsCloseBtn").addEventListener("click", closeSettingsModal);
+    document.querySelector("#settingsModal").addEventListener("click", (ev) => {
+      if (ev.target.id === "settingsModal") closeSettingsModal();
+    });
+    document.querySelector("#providerSelect").addEventListener("change", (ev) => {
+      const provider = ev.target.value;
+      renderModelOptions(provider, null);
+      document.querySelector("#baseUrlInput").value = PROVIDERS[provider].baseUrl;
+    });
+    document.querySelector("#saveSettingsBtn").addEventListener("click", () => {
+      const settings = {
+        provider: document.querySelector("#providerSelect").value,
+        baseUrl: document.querySelector("#baseUrlInput").value.trim(),
+        model: document.querySelector("#modelSelect").value,
+        apiKey: document.querySelector("#apiKeyInput").value,
+      };
+      saveLocalModelSettings(settings);
+      closeSettingsModal();
+    });
+    document.querySelector("#clearSettingsBtn").addEventListener("click", () => {
+      localStorage.removeItem(MODEL_SETTINGS_KEY);
+      document.querySelector("#modelBadge").textContent = "demo mode";
+      closeSettingsModal();
+    });
+
+    // ----- bootstrap ------------------------------------------------------
+
+    loadConfig();
+    loadDatasets();
+    refreshControls();
+  </script>
+</body>
+</html>

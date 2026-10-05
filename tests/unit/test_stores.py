@@ -134,6 +134,24 @@ def test_dataset_get_rejects_wrong_session(tmp_path: Path) -> None:
     assert error.value.code is ErrorCode.UNKNOWN_REFERENCE
 
 
+def test_dataset_list_in_session_returns_summaries(tmp_path: Path) -> None:
+    store = LocalDatasetStore(tmp_path)
+    dataset = _import_demo()
+    store.save(dataset, SESSION_A)
+
+    items = store.list_in_session(SESSION_A)
+
+    assert items == [
+        {
+            "dataset_id": dataset.manifest.dataset_id,
+            "asset_id": "DEMO_A",
+            "date_min": "2024-01-02",
+            "date_max": "2024-01-04",
+            "row_count": 3,
+        }
+    ]
+
+
 def test_dataset_invalid_id_rejected(tmp_path: Path) -> None:
     store = LocalDatasetStore(tmp_path)
     with pytest.raises(QuantLabError) as error:
@@ -291,4 +309,68 @@ def test_path_traversal_in_dataset_id_rejected(tmp_path: Path) -> None:
     store = LocalDatasetStore(tmp_path)
     with pytest.raises(QuantLabError) as error:
         store.get("..", SESSION_A)
+    assert error.value.code is ErrorCode.UNKNOWN_REFERENCE
+
+
+def test_list_in_session_empty_when_no_data(tmp_path: Path) -> None:
+    store = LocalDatasetStore(tmp_path)
+    assert store.list_in_session(SESSION_A) == []
+
+
+def test_list_in_session_returns_summaries_sorted(tmp_path: Path) -> None:
+    store = LocalDatasetStore(tmp_path)
+    # Import two datasets — manifests are sorted alphabetically on disk
+    # so the listing should be stable regardless of save order.
+    ds_a = _import_demo(asset_id="DEMO_A")
+    ds_b = _import_demo(asset_id="DEMO_B")
+    store.save(ds_a, SESSION_A)
+    store.save(ds_b, SESSION_A)
+
+    items = store.list_in_session(SESSION_A)
+    assert [item["asset_id"] for item in items] == ["DEMO_A", "DEMO_B"]
+    # Each summary carries the four fields the tool layer exposes.
+    first = items[0]
+    assert set(first.keys()) == {
+        "dataset_id",
+        "asset_id",
+        "date_min",
+        "date_max",
+        "row_count",
+    }
+    assert first["dataset_id"] == ds_a.manifest.dataset_id
+    assert first["row_count"] == 3
+
+
+def test_list_in_session_isolated_per_session(tmp_path: Path) -> None:
+    store = LocalDatasetStore(tmp_path)
+    ds = _import_demo(asset_id="DEMO_A")
+    store.save(ds, SESSION_A)
+
+    # SESSION_B has no data even though SESSION_A does.
+    assert store.list_in_session(SESSION_B) == []
+    assert len(store.list_in_session(SESSION_A)) == 1
+
+
+def test_list_in_session_skips_dirs_without_manifest(tmp_path: Path) -> None:
+    """A stray dataset directory (no manifest.json) must be ignored
+    rather than crash the listing — the disk layout may contain
+    half-written directories from interrupted runs.
+    """
+    store = LocalDatasetStore(tmp_path)
+    # Real dataset
+    ds = _import_demo(asset_id="DEMO_A")
+    store.save(ds, SESSION_A)
+    # Stray directory: looks like a dataset but has no manifest.
+    stray = tmp_path / SESSION_A / "datasets" / "00000000-0000-4000-8000-000000000abc"
+    stray.mkdir(parents=True)
+    (stray / "normalized.csv").write_text("date,close\n2024-01-02,1\n")
+
+    items = store.list_in_session(SESSION_A)
+    assert [item["asset_id"] for item in items] == ["DEMO_A"]
+
+
+def test_list_in_session_rejects_non_uuid_session_id(tmp_path: Path) -> None:
+    store = LocalDatasetStore(tmp_path)
+    with pytest.raises(QuantLabError) as error:
+        store.list_in_session("not-a-uuid")
     assert error.value.code is ErrorCode.UNKNOWN_REFERENCE

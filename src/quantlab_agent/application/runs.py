@@ -140,6 +140,27 @@ class RunService:
             completed_at=utcnow(),
         )
 
+    def mark_needs_clarification(
+        self,
+        run_id: str,
+        session_id: str,
+        *,
+        message: str,
+        details: dict[str, Any] | None = None,
+    ) -> Run:
+        return self._runs.transition(
+            run_id,
+            session_id,
+            expected_status=RunStatus.RUNNING,
+            new_status=RunStatus.NEEDS_CLARIFICATION,
+            failure={
+                "code": "NEEDS_CLARIFICATION",
+                "message": message,
+                "retryable": True,
+                "details": details or {},
+            },
+        )
+
     def cancel(self, run_id: str, session_id: str) -> Run:
         current = self._runs.get(run_id, session_id)
         # Allow cancel from RUNNING or NEEDS_CLARIFICATION.
