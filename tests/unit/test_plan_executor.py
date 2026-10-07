@@ -208,6 +208,32 @@ def test_executor_report_marks_run_succeeded(tmp_path: Path) -> None:
     assert final.report_id is not None
 
 
+def test_executor_chart_runs_inspect_prepare_create_charts(tmp_path: Path) -> None:
+    registry, run_service, dataset_store = _build(tmp_path)
+    ds_id = _seed_dataset(dataset_store)
+    run_id = _make_run(run_service)
+
+    plan = ResolvedPlan(
+        intent=Intent.CHART,
+        resolved_dataset_ids=(ds_id,),
+        date_range=DateRange(start="2024-01-02", end="2024-01-15"),
+        effective_start=None,
+        effective_end=None,
+        charts=(ChartKind.NORMALIZED_PRICES,),
+    )
+    final = PlanExecutor(registry=registry, run_service=run_service).execute(
+        run_id=run_id, session_id=SESSION, plan=plan
+    )
+    tool_names = [r.tool_name for r in run_service.list_tool_calls(run_id, SESSION)]
+    assert tool_names == [
+        "inspect_dataset",
+        "prepare_analysis",
+        "create_charts",
+    ]
+    assert final.status is RunStatus.SUCCEEDED
+    assert final.chart_ids
+
+
 def test_executor_clarify_marks_needs_clarification(tmp_path: Path) -> None:
     registry, run_service, _dataset_store = _build(tmp_path)
     run_id = _make_run(run_service)
