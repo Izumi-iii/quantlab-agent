@@ -242,7 +242,7 @@ class Intent(StrEnum):
 
       data_quality  → list_datasets + inspect_dataset
       metrics       → list_datasets + inspect_dataset + prepare + compute
-      chart         → (reserved for M7)
+      chart         → list_datasets + inspect_dataset + prepare + create_charts
       report        → full 5-tool chain + build_report
       clarify       → mark NEEDS_CLARIFICATION, no tools
       out_of_scope  → mark FAILED(OUT_OF_SCOPE), no tools

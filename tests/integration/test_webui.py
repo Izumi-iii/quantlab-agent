@@ -259,6 +259,38 @@ def test_message_drive_creates_run_with_charts_and_report(server: _ServerThread)
     assert "build_report" in tool_names
 
 
+def test_message_trend_chart_creates_chart_only_run(server: _ServerThread) -> None:
+    csv = b"date,close\n2024-01-02,100\n2024-01-03,101\n2024-01-04,99\n2024-01-05,103\n"
+    body = _build_multipart_csv(
+        "file", csv, {"asset_id": "DEMO_CHART", "price_basis": "forward_adjusted"}
+    )
+    req = urllib.request.Request(
+        f"{server.url}/api/sessions/{SESSION}/datasets",
+        data=body,
+        method="POST",
+        headers={"Content-Type": "multipart/form-data; boundary=----qlTestBoundary1234567890"},
+    )
+    urllib.request.urlopen(req, timeout=5).read()
+
+    status, body, _ = _http_post_json(
+        f"{server.url}/api/sessions/{SESSION}/messages",
+        {
+            "text": "生成 DEMO_CHART 趋势图表",
+            "start": "2024-01-02",
+            "end": "2024-01-15",
+        },
+    )
+    assert status == 200
+    payload = json.loads(body)
+    run = payload["run"]
+    assert run["intent"] == "chart"
+    assert run["status"] == "succeeded"
+    assert run["chart_ids"]
+    assert "图表已生成" in run["summary"]
+    tool_names = [tc["tool_name"] for tc in payload["tool_calls"]]
+    assert tool_names == ["inspect_dataset", "prepare_analysis", "create_charts"]
+
+
 def test_chart_png_served(server: _ServerThread) -> None:
     # Seed + drive.
     csv = b"date,close\n2024-01-02,100\n2024-01-03,101\n2024-01-04,99\n"

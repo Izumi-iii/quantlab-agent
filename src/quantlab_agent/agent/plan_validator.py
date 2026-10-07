@@ -208,6 +208,9 @@ class PlanValidator:
         if plan.intent is Intent.METRICS:
             metric_list = ", ".join(m.value for m in plan.metrics) or "default metrics"
             return f"Computing {metric_list} for {target}."
+        if plan.intent is Intent.CHART:
+            chart_list = ", ".join(c.value for c in plan.charts) or "default charts"
+            return f"Creating {chart_list} for {target}."
         if plan.intent is Intent.REPORT:
             return f"Building a Markdown report for {target}."
         return f"Plan ready for {target}."
