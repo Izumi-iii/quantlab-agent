@@ -230,6 +230,97 @@ class ChartKind(StrEnum):
     DRAWDOWN = "drawdown"
 
 
+# ---------------------------------------------------------------------------
+# M6 — Planner layer contracts (AnalysisPlan, ResolvedPlan).
+# ---------------------------------------------------------------------------
+
+
+class Intent(StrEnum):
+    """First-class action the user-visible intent maps to.
+
+    Maps to the state machine / tool chain:
+
+      data_quality  → list_datasets + inspect_dataset
+      metrics       → list_datasets + inspect_dataset + prepare + compute
+      chart         → (reserved for M7)
+      report        → full 5-tool chain + build_report
+      clarify       → mark NEEDS_CLARIFICATION, no tools
+      out_of_scope  → mark FAILED(OUT_OF_SCOPE), no tools
+    """
+
+    DATA_QUALITY = "data_quality"
+    METRICS = "metrics"
+    CHART = "chart"
+    REPORT = "report"
+    CLARIFY = "clarify"
+    OUT_OF_SCOPE = "out_of_scope"
+
+
+class DateRange(FrozenModel):
+    start: date
+    end: date
+
+    @model_validator(mode="after")
+    def _validate_dates(self) -> "DateRange":
+        if self.start > self.end:
+            raise ValueError("date_range.start must be on or before date_range.end")
+        return self
+
+
+class AnalysisPlan(FrozenModel):
+    """Structured output of the Planner layer.
+
+    ``intent`` decides the executor branch; ``dataset_refs`` are user-facing
+    asset_ids or filenames that the validator resolves to session UUIDs;
+    ``metrics`` and ``charts`` are subsets of the closed enums. The
+    validator fills in ``resolved_dataset_ids`` and clamps the date range
+    to dataset coverage.
+    """
+
+    schema_version: Literal["plan-v1"] = "plan-v1"
+    intent: Intent
+    dataset_refs: tuple[str, ...] = ()
+    date_range: DateRange | None = None
+    metrics: tuple[MetricName, ...] = ()
+    charts: tuple[ChartKind, ...] = ()
+    clarifying_question: str | None = None
+    user_visible_summary: str = ""
+
+    @model_validator(mode="after")
+    def _validate_intent_requirements(self) -> "AnalysisPlan":
+        if self.intent in (Intent.METRICS, Intent.REPORT, Intent.CHART):
+            if not self.metrics and self.intent is not Intent.CHART:
+                raise ValueError(
+                    f"intent={self.intent.value} requires at least one metric in `metrics`"
+                )
+        if self.intent is Intent.CLARIFY and not self.clarifying_question:
+            raise ValueError("intent=clarify requires a clarifying_question")
+        if self.user_visible_summary and len(self.user_visible_summary) > 500:
+            raise ValueError("user_visible_summary must be ≤ 500 characters")
+        return self
+
+
+class ResolvedPlan(FrozenModel):
+    """``AnalysisPlan`` after PlanValidator resolves references and dates.
+
+    ``resolved_dataset_ids`` is always a tuple of UUIDs from the current
+    session. ``effective_start`` / ``effective_end`` are the clamped dates
+    that get fed into ``prepare_analysis``.
+    """
+
+    schema_version: Literal["resolved-plan-v1"] = "resolved-plan-v1"
+    intent: Intent
+    resolved_dataset_ids: tuple[str, ...]
+    date_range: DateRange | None
+    effective_start: date | None = None
+    effective_end: date | None = None
+    metrics: tuple[MetricName, ...] = ()
+    charts: tuple[ChartKind, ...] = ()
+    clarifying_question: str | None = None
+    user_visible_summary: str = ""
+    plan_summary: str = ""
+
+
 class ReportSection(StrEnum):
     OVERVIEW = "overview"
     DATA_SOURCES = "data_sources"

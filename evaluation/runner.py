@@ -275,6 +275,96 @@ def _run_registry_unit(case_id: str) -> dict[str, Any]:
         }
 
 
+def _run_planner_unit(case: dict[str, Any]) -> dict[str, Any]:
+    """Planner-layer evaluation cases (M6).
+
+    Each case seeds one or two demo datasets, runs
+    ``RulePlanner.plan -> PlanValidator.validate -> PlanExecutor.execute``,
+    and reports the resulting ``run.status``, ``run.failure``, and the
+    list of tool names persisted in ``tool_calls.jsonl``.
+    """
+    from quantlab_agent.agent.plan_executor import PlanExecutor
+    from quantlab_agent.agent.plan_validator import PlanValidator
+    from quantlab_agent.agent.planner import PlannerContext, RulePlanner
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp)
+        dataset_store = LocalDatasetStore(path)
+        run_store = LocalRunStore(path)
+        chart_store = LocalChartStore(path)
+        report_store = LocalReportStore(path)
+        registry = default_registry(
+            dataset_service=DatasetService(),
+            analysis_service=AnalysisService(),
+            chart_service=ChartService(
+                chart_store=chart_store,
+                plot_service=PlotService(),
+                run_service=RunService(run_store),
+            ),
+            report_service=ReportService(
+                report_store=report_store, run_service=RunService(run_store)
+            ),
+            run_service=RunService(run_store),
+            dataset_store=dataset_store,
+            run_store=run_store,
+            chart_store=chart_store,
+            report_store=report_store,
+        )
+        run_service = RunService(run_store)
+
+        # Seed the assets requested by the case.
+        seed_assets = case.get("seed_assets") or ["DEMO_A"]
+        for asset_id in seed_assets:
+            metadata = DatasetMetadata(
+                asset_id=asset_id,
+                source_name="eval fixture",
+                price_basis=PriceBasis.FORWARD_ADJUSTED,
+                currency="CNY",
+                frequency="daily",
+                calendar_label="synthetic weekdays",
+                daily_series_complete=True,
+                is_synthetic=True,
+            )
+            content = (
+                b"date,close\n2024-01-02,100\n2024-01-03,101\n2024-01-04,99\n"
+                b"2024-01-05,102\n2024-01-08,103\n2024-01-09,101\n"
+                b"2024-01-10,100\n2024-01-11,99\n2024-01-12,98\n2024-01-15,99\n"
+            )
+            res = DatasetService().import_csv(
+                content, metadata=metadata, session_id=DEMO_SESSION_ID
+            )
+            assert res.dataset is not None, f"could not import {asset_id}"
+            dataset_store.save(res.dataset, DEMO_SESSION_ID)
+
+        ctx = PlannerContext(
+            session_id=DEMO_SESSION_ID,
+            dataset_summaries=tuple(dataset_store.list_in_session(DEMO_SESSION_ID)),
+        )
+        plan = RulePlanner().plan(case["user_request"], ctx)
+        validator = PlanValidator(resolver=dataset_store)
+        resolved = validator.validate(plan, session_id=DEMO_SESSION_ID)
+
+        run = run_service.create_run(
+            session_id=DEMO_SESSION_ID,
+            mode=RunMode.REAL_AGENT,
+            user_request=case["user_request"],
+        )
+        executor = PlanExecutor(registry=registry, run_service=run_service)
+        final = executor.execute(run_id=run.run_id, session_id=DEMO_SESSION_ID, plan=resolved)
+
+        records = run_service.list_tool_calls(run.run_id, DEMO_SESSION_ID)
+        tool_names = [r.tool_name for r in records]
+        snapshot = dict(final.context_snapshot or {})
+        failure_details = (final.failure or {}).get("details") or {}
+        return {
+            "intent": snapshot.get("intent") or failure_details.get("intent"),
+            "run_status": final.status.value,
+            "failure_code": (final.failure or {}).get("code"),
+            "tool_names": tool_names,
+            "metric_count": len(tool_names),  # approximate; full metric count is irrelevant here
+        }
+
+
 def _run_custom(
     demo: DemoController,
     case_id: str,
@@ -492,6 +582,8 @@ def run_case(case: dict[str, Any]) -> CaseResult:
 
             elif mode == "registry_unit":
                 actual = _run_registry_unit(case_id)
+            elif mode == "planner_unit":
+                actual = _run_planner_unit(case)
             else:
                 raise ValueError(f"Unknown mode: {mode}")
 

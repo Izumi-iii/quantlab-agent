@@ -7,6 +7,7 @@ a small JSON API the page calls to drive ``AgentController`` /
     POST /api/sessions/{sid}/datasets        — upload a CSV (multipart)
     GET  /api/sessions/{sid}/datasets        — list imported datasets
     GET  /api/sessions/{sid}/datasets/{dsid}.csv — normalized CSV (text)
+    DELETE /api/sessions/{sid}/datasets/{dsid}  — delete imported dataset
     POST /api/sessions/{sid}/messages        — send user text, run agent
     GET  /api/runs/{rid}                     — get run state + tool calls
     GET  /api/runs/{rid}/chart/{cid}.png     — chart PNG (binary)
@@ -40,6 +41,9 @@ from urllib.parse import urlparse
 
 from quantlab_agent.adapters.local_stores import LocalDatasetStore
 from quantlab_agent.agent.demo import DemoController, default_demo_controller
+from quantlab_agent.agent.plan_executor import PlanExecutor
+from quantlab_agent.agent.plan_validator import PlanValidator
+from quantlab_agent.agent.planner import PlannerContext, RulePlanner
 from quantlab_agent.application.datasets import DatasetService
 from quantlab_agent.config import ModelConfig, load_config
 from quantlab_agent.domain.errors import QuantLabError
@@ -60,6 +64,7 @@ _SID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]
 _RID = _SID
 _CID = _SID
 _RE_DATASETS = re.compile(rf"^/api/sessions/({_SID})/datasets/?$")
+_RE_SESSION_DATASET = re.compile(rf"^/api/sessions/({_SID})/datasets/({_SID})/?$")
 _RE_SESSION_CSV = re.compile(rf"^/api/sessions/({_SID})/datasets/({_SID})\.csv$")
 _RE_MESSAGES = re.compile(rf"^/api/sessions/({_SID})/messages/?$")
 _RE_RUN = re.compile(rf"^/api/runs/({_RID})/?$")
@@ -167,28 +172,61 @@ class WebState:
     controller: DemoController
     dataset_service: DatasetService
     dataset_store: LocalDatasetStore
+    registry: Any = None
+    run_service: Any = None
+    planner: Any = None
+    plan_validator: Any = None
+    plan_executor: Any = None
     ui_model_overrides: dict[str, ModelConfig] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
-def build_state(runs_dir: Path) -> WebState:
+def build_state(runs_dir: Path, *, model_config: ModelConfig | None = None) -> WebState:
     runs_dir = Path(runs_dir).resolve()
     controller = default_demo_controller(runs_dir)
+    # Reach into the demo controller to extract the wired registry and run
+    # service — both are reused by the planner pipeline. We deliberately
+    # avoid duplicating wiring here; the demo controller already
+    # composes the same graph.
+    registry = controller._registry  # type: ignore[attr-defined]
+    run_service = controller._runs  # type: ignore[attr-defined]
+    plan_validator = PlanValidator(resolver=controller.dataset_store)
+    plan_executor = PlanExecutor(registry=registry, run_service=run_service)
+
+    # Pick a planner: LLM when configured, otherwise rule-based.
+    from quantlab_agent.agent.planner_factory import build_planner
+
+    planner = (
+        build_planner(model_config) if model_config and model_config.configured else RulePlanner()
+    )
+
     return WebState(
         runs_dir=runs_dir,
         controller=controller,
         dataset_service=DatasetService(),
         dataset_store=controller.dataset_store,
+        registry=registry,
+        run_service=run_service,
+        planner=planner,
+        plan_validator=plan_validator,
+        plan_executor=plan_executor,
     )
 
 
 # --- serialization helpers -----------------------------------------------
 
 
-def _serialize_run(run) -> dict[str, Any]:
+def _serialize_run(run, records: tuple[Any, ...] = ()) -> dict[str, Any]:
     """Convert a Run to a JSON-safe dict. Tool-call records are loaded
     separately via the ``include_tool_calls`` path.
     """
+    snapshot = dict(run.context_snapshot or {})
+    failure_details = (run.failure or {}).get("details") or {}
+    intent = snapshot.get("intent") or failure_details.get("intent")
+    user_visible_summary = snapshot.get("user_visible_summary") or failure_details.get(
+        "user_visible_summary"
+    )
+    rich_summary = _derive_rich_summary(run, records, intent)
     payload: dict[str, Any] = {
         "run_id": run.run_id,
         "session_id": run.session_id,
@@ -201,6 +239,9 @@ def _serialize_run(run) -> dict[str, Any]:
         "chart_ids": list(run.chart_ids),
         "report_id": run.report_id,
         "failure": run.failure,
+        "intent": intent,
+        "plan_summary": snapshot.get("plan_summary"),
+        "summary": rich_summary or user_visible_summary or _derive_summary(run),
         "counters": {
             "tool_executions_used": run.counters.tool_executions_used,
             "model_interactions_used": run.counters.model_interactions_used,
@@ -211,6 +252,162 @@ def _serialize_run(run) -> dict[str, Any]:
         "completed_at": run.completed_at.isoformat() if run.completed_at else None,
     }
     return payload
+
+
+def _derive_rich_summary(run, records: tuple[Any, ...], intent: str | None) -> str | None:
+    if intent == "data_quality":
+        return _summarize_data_quality(records)
+    if intent == "metrics":
+        return _summarize_metrics(run, records)
+    if intent == "chart":
+        return _summarize_chart(run, records)
+    return None
+
+
+_METRIC_LABELS = {
+    "period_return": "区间收益",
+    "max_drawdown": "最大回撤",
+    "annualized_volatility": "年化波动率",
+}
+
+
+def _format_metric_value(metric_name: str, value: object) -> str:
+    if value is None:
+        return "不可用"
+    if not isinstance(value, int | float):
+        return str(value)
+    if metric_name in {"period_return", "max_drawdown", "annualized_volatility"}:
+        return f"{value * 100:.2f}%"
+    return f"{value:.6g}"
+
+
+def _summarize_metrics(run, records: tuple[Any, ...]) -> str | None:
+    metrics_payload: dict[str, Any] | None = None
+    for record in records:
+        if record.tool_name != "compute_metrics" or record.status.value != "succeeded":
+            continue
+        data = record.result_envelope.data
+        if isinstance(data, dict):
+            metrics_payload = data
+    if metrics_payload is None:
+        return None
+
+    snapshot = dict(run.context_snapshot or {})
+    effective_start = snapshot.get("effective_start") or snapshot.get("requested_start")
+    effective_end = snapshot.get("effective_end") or snapshot.get("requested_end")
+    lines = ["指标计算完成。"]
+    if effective_start and effective_end:
+        lines.append(f"有效区间：{effective_start} 至 {effective_end}。")
+
+    assets = metrics_payload.get("assets") or []
+    if not assets:
+        return "\n".join(lines)
+
+    for asset in assets:
+        asset_id = asset.get("asset_id", "UNKNOWN")
+        lines.append(f"- {asset_id}")
+        metrics = asset.get("metrics") or {}
+        for metric_name, payload in metrics.items():
+            label = _METRIC_LABELS.get(metric_name, metric_name)
+            if not isinstance(payload, dict):
+                lines.append(f"  - {label}: {payload}")
+                continue
+            value_text = _format_metric_value(metric_name, payload.get("value"))
+            observations = payload.get("observations")
+            reason = payload.get("unavailable_reason")
+            suffix = f"，观测数 {observations}" if observations is not None else ""
+            if reason:
+                suffix += f"，原因：{reason}"
+            lines.append(f"  - {label}: {value_text}{suffix}")
+    return "\n".join(lines)
+
+
+def _summarize_data_quality(records: tuple[Any, ...]) -> str | None:
+    inspected: list[dict[str, Any]] = []
+    for record in records:
+        if record.tool_name != "inspect_dataset" or record.status.value != "succeeded":
+            continue
+        data = record.result_envelope.data
+        if isinstance(data, dict):
+            inspected.append(data)
+    if not inspected:
+        return None
+
+    lines = ["数据质量检查完成。"]
+    total_issues = 0
+    for item in inspected:
+        asset_id = item.get("asset_id", "UNKNOWN")
+        row_count = item.get("row_count", "?")
+        date_min = item.get("date_min", "?")
+        date_max = item.get("date_max", "?")
+        issues = item.get("quality_issues") or []
+        issue_count = len(issues)
+        total_issues += issue_count
+        if issue_count:
+            lines.append(
+                f"- {asset_id}: {row_count} 行，覆盖 {date_min} 至 {date_max}，发现 {issue_count} 个质量问题。"
+            )
+            for issue in issues[:3]:
+                severity = issue.get("severity", "unknown")
+                code = issue.get("code", "UNKNOWN")
+                message = issue.get("message", "")
+                lines.append(f"  - {severity} / {code}: {message}")
+            if issue_count > 3:
+                lines.append(f"  - 另有 {issue_count - 3} 个问题，可展开工具调用链查看。")
+        else:
+            lines.append(
+                f"- {asset_id}: {row_count} 行，覆盖 {date_min} 至 {date_max}，未发现质量问题。"
+            )
+    if total_issues == 0:
+        lines.append("这些数据可以继续用于收益、回撤、波动率等指标分析。")
+    return "\n".join(lines)
+
+
+def _summarize_chart(run, records: tuple[Any, ...]) -> str | None:
+    chart_payload: dict[str, Any] | None = None
+    for record in records:
+        if record.tool_name != "create_charts" or record.status.value != "succeeded":
+            continue
+        data = record.result_envelope.data
+        if isinstance(data, dict):
+            chart_payload = data
+    if chart_payload is None:
+        return None
+
+    chart_ids = chart_payload.get("chart_ids") or []
+    kinds = chart_payload.get("kinds") or []
+    snapshot = dict(run.context_snapshot or {})
+    effective_start = snapshot.get("effective_start") or snapshot.get("requested_start")
+    effective_end = snapshot.get("effective_end") or snapshot.get("requested_end")
+
+    lines = ["图表已生成。"]
+    if effective_start and effective_end:
+        lines.append(f"有效区间：{effective_start} 至 {effective_end}。")
+    if kinds:
+        labels = {
+            "normalized_prices": "归一化价格走势",
+            "drawdown": "回撤曲线",
+        }
+        kind_text = "、".join(labels.get(str(kind), str(kind)) for kind in kinds)
+        lines.append(f"图表类型：{kind_text}。")
+    lines.append(f"已生成 {len(chart_ids)} 张图，可在右侧 Chart 查看。")
+    return "\n".join(lines)
+
+
+def _derive_summary(run) -> str | None:
+    """Fallback message bubble text when no planner summary exists."""
+    if run.status.value == "needs_clarification" and run.failure:
+        details = run.failure.get("details") or {}
+        question = details.get("clarifying_question") or run.failure.get("message")
+        if question:
+            return f"需要更多信息: {question}"
+    if run.status.value == "failed" and run.failure:
+        msg = run.failure.get("message")
+        if msg:
+            return f"分析失败: {msg}"
+    if run.status.value == "succeeded":
+        return "已完成分析。点击此处查看报告。"
+    return None
 
 
 def _serialize_tool_call(record) -> dict[str, Any]:
@@ -325,6 +522,26 @@ class _Handler(BaseHTTPRequestHandler):
                 HTTPStatus.INTERNAL_SERVER_ERROR, "INTERNAL", f"{type(exc).__name__}: {exc}"
             )
 
+    def do_DELETE(self) -> None:  # noqa: N802 - stdlib name
+        try:
+            self._dispatch_delete()
+        except BadRequest as exc:
+            self._write_error(HTTPStatus.BAD_REQUEST, "BAD_REQUEST", str(exc))
+        except NotFound as exc:
+            self._write_error(HTTPStatus.NOT_FOUND, "NOT_FOUND", str(exc))
+        except QuantLabError as exc:
+            status = (
+                HTTPStatus.NOT_FOUND
+                if exc.code.value == "UNKNOWN_REFERENCE"
+                else HTTPStatus.BAD_REQUEST
+            )
+            self._write_error(status, exc.code.value, exc.user_message, details=exc.details)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("DELETE %s failed", self.path)
+            self._write_error(
+                HTTPStatus.INTERNAL_SERVER_ERROR, "INTERNAL", f"{type(exc).__name__}: {exc}"
+            )
+
     # ----- GET dispatch -----
 
     def _dispatch_get(self) -> None:
@@ -385,6 +602,14 @@ class _Handler(BaseHTTPRequestHandler):
             return
         raise NotFound(f"no route for POST {path}")
 
+    def _dispatch_delete(self) -> None:
+        path = urlparse(self.path).path
+        m = _RE_SESSION_DATASET.match(path)
+        if m:
+            self._handle_delete_dataset(m.group(1), m.group(2))
+            return
+        raise NotFound(f"no route for DELETE {path}")
+
     # ----- concrete endpoints -----
 
     def _serve_index(self) -> None:
@@ -429,6 +654,10 @@ class _Handler(BaseHTTPRequestHandler):
     def _handle_list_datasets(self, session_id: str) -> None:
         items = self.state.dataset_store.list_in_session(session_id)
         self._write_json(HTTPStatus.OK, {"datasets": [_serialize_dataset(i) for i in items]})
+
+    def _handle_delete_dataset(self, session_id: str, dataset_id: str) -> None:
+        self.state.dataset_store.delete(dataset_id, session_id)
+        self._write_json(HTTPStatus.OK, {"deleted": True, "dataset_id": dataset_id})
 
     def _handle_upload_dataset(self, session_id: str) -> None:
         """Parse multipart/form-data, save the CSV, return dataset summary."""
@@ -487,55 +716,126 @@ class _Handler(BaseHTTPRequestHandler):
         text = (body.get("text") or "").strip()
         if not text:
             raise BadRequest("'text' field is required and must be non-empty")
-        start = body.get("start") or "2024-01-02"
-        end = body.get("end") or "2024-01-15"
-        metrics_raw = body.get("metrics") or ["period_return", "max_drawdown"]
-        try:
-            metrics = tuple(MetricName(m) for m in metrics_raw)
-        except ValueError as exc:
-            raise BadRequest(f"invalid metric name: {exc}") from exc
-        # Validate dates.
-        try:
-            _date.fromisoformat(start)
-            _date.fromisoformat(end)
-        except ValueError as exc:
-            raise BadRequest(f"invalid date: {exc}") from exc
 
-        run_service = self.state.controller._runs  # type: ignore[attr-defined]
         datasets = self.state.dataset_store.list_in_session(session_id)
         if not datasets:
             raise BadRequest("no datasets imported in this session — upload at least one CSV first")
-        dataset_ids = [d["dataset_id"] for d in datasets]  # type: ignore[index]
 
-        run = run_service.create_run(
+        run = self.state.run_service.create_run(
             session_id=session_id,
             mode=RunMode.DEMO,
             user_request=text,
         )
         try:
-            for ds_id in dataset_ids:
-                run_service.add_dataset(run.run_id, session_id, ds_id)
-            self.state.controller._execute_pipeline(  # type: ignore[attr-defined]
+            # Planner → Validator → Executor pipeline.
+            ctx = PlannerContext(
+                session_id=session_id,
+                dataset_summaries=tuple(datasets),
+            )
+            plan = self.state.planner.plan(text, ctx)
+            resolved_or_exc = self.state.plan_validator.validate(plan, session_id=session_id)
+            # If the plan needs explicit date/metric params that the user
+            # supplied in the JSON body, prefer those (legacy form).
+            resolved_or_exc = self._apply_legacy_overrides(resolved_or_exc, body, datasets)
+            self.state.plan_executor.execute(
                 run_id=run.run_id,
                 session_id=session_id,
-                dataset_ids=dataset_ids,
-                requested_start=start,
-                requested_end=end,
-                requested_metrics=tuple(m.value for m in metrics),
+                plan=resolved_or_exc,
             )
-        except QuantLabError:
-            # Pipeline errors are reflected in the run state; don't fail the
-            # request — the client will see them in the returned envelope.
-            pass
-        final = run_service.get_run(run.run_id, session_id)
-        records = run_service.list_tool_calls(run.run_id, session_id)
+        except QuantLabError as exc:
+            # Pipeline errors are reflected in the run state; record them
+            # so the UI sees a FAILED status and details.
+            try:
+                self.state.run_service.mark_failed(
+                    run.run_id,
+                    session_id,
+                    code=exc.code.value,
+                    message=str(exc),
+                    retryable=exc.retryable,
+                    details=exc.details,
+                )
+            except QuantLabError:
+                pass
+        except Exception as exc:  # noqa: BLE001 - top-level guard
+            log.exception("planner pipeline failed")
+            try:
+                self.state.run_service.mark_failed(
+                    run.run_id,
+                    session_id,
+                    code="TOOL_FAILURE",
+                    message=f"{type(exc).__name__}: {exc}",
+                    retryable=False,
+                )
+            except QuantLabError:
+                pass
+
+        final = self.state.run_service.get_run(run.run_id, session_id)
+        records = self.state.run_service.list_tool_calls(run.run_id, session_id)
         self._write_json(
             HTTPStatus.OK,
             {
-                "run": _serialize_run(final),
+                "run": _serialize_run(final, tuple(records)),
                 "tool_calls": [_serialize_tool_call(r) for r in records],
             },
         )
+
+    def _apply_legacy_overrides(self, plan, body, datasets):
+        """Allow the JSON body to pin a date range / metric set for the
+        legacy form-based path. The planner's output wins by intent; body
+        start/end and metrics can refine a resolved plan for old clients.
+        """
+        from quantlab_agent.domain.models import DateRange, ResolvedPlan
+
+        if not isinstance(plan, ResolvedPlan):
+            return plan
+        start = body.get("start")
+        end = body.get("end")
+        metrics_raw = body.get("metrics")
+        new_range = plan.date_range
+        if start and end:
+            try:
+                _date.fromisoformat(start)
+                _date.fromisoformat(end)
+                new_range = DateRange(start=start, end=end)
+            except ValueError:
+                pass
+        new_metrics = plan.metrics
+        if metrics_raw:
+            try:
+                new_metrics = tuple(MetricName(m) for m in metrics_raw)
+            except ValueError:
+                pass
+        effective_start, effective_end = plan.effective_start, plan.effective_end
+        if new_range is not plan.date_range:
+            effective_start, effective_end = self._resolve_effective_range(
+                new_range,
+                plan.resolved_dataset_ids,
+                datasets,
+            )
+        return plan.model_copy(
+            update={
+                "date_range": new_range,
+                "effective_start": effective_start,
+                "effective_end": effective_end,
+                "metrics": new_metrics,
+            }
+        )
+
+    @staticmethod
+    def _resolve_effective_range(date_range, resolved_dataset_ids, datasets):
+        by_id = {item["dataset_id"]: item for item in datasets}
+        coverage = [by_id[ds_id] for ds_id in resolved_dataset_ids if ds_id in by_id]
+        if not coverage:
+            return (None, None)
+        coverage_min = min(_date.fromisoformat(item["date_min"]) for item in coverage)
+        coverage_max = max(_date.fromisoformat(item["date_max"]) for item in coverage)
+        if date_range is None:
+            return coverage_min, coverage_max
+        effective_start = max(date_range.start, coverage_min)
+        effective_end = min(date_range.end, coverage_max)
+        if effective_start > effective_end:
+            return coverage_min, coverage_max
+        return effective_start, effective_end
 
     def _handle_get_run(self, run_id: str) -> None:
         run_service = self.state.controller._runs  # type: ignore[attr-defined]
@@ -546,7 +846,7 @@ class _Handler(BaseHTTPRequestHandler):
         self._write_json(
             HTTPStatus.OK,
             {
-                "run": _serialize_run(run),
+                "run": _serialize_run(run, tuple(records)),
                 "tool_calls": [_serialize_tool_call(r) for r in records],
             },
         )
@@ -567,12 +867,18 @@ class _Handler(BaseHTTPRequestHandler):
     def _handle_get_csv(self, run_id: str, dataset_id: str) -> None:
         session_id = self.state.controller._runs._runs.session_for(run_id)  # type: ignore[attr-defined]
         csv_path = self.state.dataset_store.get_normalized_csv_path(dataset_id, session_id)
-        body = Path(csv_path).read_text(encoding="utf-8")
+        path = Path(csv_path)
+        if not path.exists():
+            raise NotFound("dataset CSV not found")
+        body = path.read_text(encoding="utf-8")
         self._write_bytes(HTTPStatus.OK, body.encode("utf-8"), "text/csv; charset=utf-8")
 
     def _handle_get_session_csv(self, session_id: str, dataset_id: str) -> None:
         csv_path = self.state.dataset_store.get_normalized_csv_path(dataset_id, session_id)
-        body = Path(csv_path).read_text(encoding="utf-8")
+        path = Path(csv_path)
+        if not path.exists():
+            raise NotFound("dataset CSV not found")
+        body = path.read_text(encoding="utf-8")
         self._write_bytes(HTTPStatus.OK, body.encode("utf-8"), "text/csv; charset=utf-8")
 
 

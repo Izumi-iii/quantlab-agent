@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -151,6 +152,16 @@ class LocalDatasetStore:
     def get_normalized_csv_path(self, dataset_id: str, session_id: str) -> str:
         d = self._dataset_dir(session_id, dataset_id)
         return str((d / "normalized.csv").resolve(strict=False))
+
+    def delete(self, dataset_id: str, session_id: str) -> None:
+        d = self._dataset_dir(session_id, dataset_id)
+        if not d.exists():
+            raise QuantLabError(
+                ErrorCode.UNKNOWN_REFERENCE,
+                "Dataset is not registered in the current session.",
+                details={"dataset_id": dataset_id},
+            )
+        shutil.rmtree(d)
 
     def list_in_session(self, session_id: str) -> list[dict[str, object]]:
         """Return a summary of every dataset stored in the session."""

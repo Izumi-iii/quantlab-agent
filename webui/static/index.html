@@ -76,7 +76,7 @@
       margin-left: 44px;
       height: calc(100vh - 56px);
       display: grid;
-      grid-template-columns: minmax(360px, 42%) minmax(560px, 58%);
+      grid-template-columns: minmax(560px, 58%) minmax(380px, 42%);
       gap: 0;
       overflow: hidden;
       min-height: 0;
@@ -133,13 +133,31 @@
       padding: 10px 12px;
       margin-bottom: 8px;
       cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
     }
     .dataset-card.selected {
       border-color: var(--accent);
       box-shadow: 0 0 0 1px var(--accent);
     }
+    .dataset-main { min-width: 0; }
     .dataset-card strong { display: block; font-size: 14px; margin-bottom: 3px; }
     .dataset-card span { color: var(--muted); font-size: 13px; }
+    .dataset-delete {
+      width: 26px;
+      height: 26px;
+      flex: 0 0 auto;
+      border: 0;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.7);
+      color: #617084;
+      cursor: pointer;
+      font-size: 17px;
+      line-height: 1;
+    }
+    .dataset-delete:hover { background: #fff1f1; color: #b94545; }
     .add-data {
       border: 1px dashed var(--line); border-radius: 8px;
       background: rgba(255, 255, 255, 0.62);
@@ -154,7 +172,7 @@
     .step {
       position: relative;
       margin-bottom: 20px;
-      max-width: 360px;
+      max-width: 560px;
     }
     .step::before {
       content: ""; position: absolute; left: -31px; top: 12px;
@@ -164,6 +182,7 @@
     }
     .step.user::before { background: var(--orange); box-shadow: 0 0 0 1px var(--orange); }
     .step.tool::before { background: var(--green); box-shadow: 0 0 0 1px var(--green); }
+    .step.thinking::before { background: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
     .bubble {
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -177,9 +196,45 @@
     .bubble.user { background: #fff4ed; border-color: #ead6c7; }
     .bubble.tool-ok { background: #eef9f0; border-color: #c6e6cf; }
     .bubble.tool-failed { background: #fff1f1; border-color: #f0c0c0; }
+    .bubble.thinking {
+      border-color: #aad5fb;
+      background: #f5fbff;
+      color: #425466;
+    }
+    .thinking-dots::after {
+      content: "";
+      animation: dots 1.1s steps(4, end) infinite;
+    }
+    @keyframes dots {
+      0% { content: ""; }
+      25% { content: "."; }
+      50% { content: ".."; }
+      75%, 100% { content: "..."; }
+    }
+    .intent-tag {
+      display: inline-block;
+      font-size: 11px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      background: var(--accent);
+      color: white;
+      padding: 2px 8px;
+      border-radius: 10px;
+      margin-right: 8px;
+      vertical-align: middle;
+    }
+    .intent-tag.intent-clarify,
+    .intent-tag.intent-out_of_scope { background: #c95a5a; }
+    .intent-tag.intent-data_quality { background: #5a8cc9; }
+    .intent-tag.intent-metrics { background: #5a9c6f; }
+    .bubble-text {
+      display: inline;
+      vertical-align: middle;
+      white-space: pre-line;
+    }
     .tool-details {
       margin-bottom: 20px;
-      max-width: 420px;
+      max-width: 560px;
     }
     .tool-details summary {
       cursor: pointer;
@@ -216,8 +271,8 @@
       background: rgba(255, 255, 255, 0.9);
     }
     .app.preview-collapsed .composer {
-      width: 66.666%;
-      min-width: 620px;
+      width: 100%;
+      min-width: 0;
       border-right: 1px solid var(--soft-line);
     }
     .suggestions { display: flex; flex-wrap: wrap; gap: 7px; margin: 0 0 8px; }
@@ -395,14 +450,19 @@
     }
     .preview-footer {
       height: 58px;
-      display: flex; align-items: center; justify-content: center;
+      display: flex; align-items: center; justify-content: flex-start;
       border-top: 1px solid var(--soft-line);
-      gap: 16px; color: var(--muted);
+      gap: 8px; color: var(--muted);
+      padding: 0 12px;
+      overflow-x: auto;
+      white-space: nowrap;
     }
     .footer-btn {
       border: 1px solid var(--line); background: #fff;
-      border-radius: 8px; padding: 8px 12px;
-      cursor: pointer; color: #4c5565; font: inherit;
+      border-radius: 8px; padding: 7px 10px;
+      cursor: pointer; color: #4c5565; font: inherit; font-size: 14px;
+      min-height: 34px;
+      flex: 0 0 auto;
     }
     .footer-btn.active { color: var(--accent); border-color: #b7dcff; background: #f4faff; }
     .footer-btn:disabled {
@@ -572,10 +632,10 @@
       </div>
 
       <footer class="preview-footer">
-        <button class="footer-btn active" data-view="table">Quick table</button>
-        <button class="footer-btn" data-view="chart">Quick chart</button>
+        <button class="footer-btn active" data-view="table">Table</button>
+        <button class="footer-btn" data-view="chart">Chart</button>
         <button class="footer-btn" data-view="report">Report</button>
-        <button class="footer-btn" id="downloadCsvBtn">Download CSV</button>
+        <button class="footer-btn" id="downloadCsvBtn">CSV</button>
         <span id="rowCount">0 行</span>
         <span id="runStatus"></span>
       </footer>
@@ -704,6 +764,14 @@
       }
       return res.json();
     }
+    async function apiDelete(path) {
+      const res = await fetch(path, { method: "DELETE" });
+      if (!res.ok) {
+        const detail = await res.text();
+        throw new Error(`${res.status} ${detail}`);
+      }
+      return res.json();
+    }
 
     // ----- loaders --------------------------------------------------------
 
@@ -746,8 +814,11 @@
       }
       const cards = state.datasets.map((d) => `
         <div class="dataset-card ${d.dataset_id === state.activeDatasetId ? "selected" : ""}" data-dataset-id="${d.dataset_id}">
-          <strong>${escapeHtml(d.asset_id)}</strong>
-          <span>${d.row_count} 行 · ${d.date_min} → ${d.date_max}</span>
+          <div class="dataset-main">
+            <strong>${escapeHtml(d.asset_id)}</strong>
+            <span>${d.row_count} 行 · ${d.date_min} → ${d.date_max}</span>
+          </div>
+          <button class="dataset-delete" type="button" title="删除 ${escapeHtml(d.asset_id)}" aria-label="删除 ${escapeHtml(d.asset_id)}" data-delete-dataset-id="${d.dataset_id}">×</button>
         </div>
       `).join("");
       list.innerHTML = cards;
@@ -756,6 +827,12 @@
         card.addEventListener("click", () => {
           showView("table");
           loadDatasetTable(card.dataset.datasetId);
+        });
+      });
+      list.querySelectorAll(".dataset-delete").forEach((button) => {
+        button.addEventListener("click", async (ev) => {
+          ev.stopPropagation();
+          await deleteDataset(button.dataset.deleteDatasetId);
         });
       });
       refreshControls();
@@ -769,6 +846,38 @@
 
     function statusPill(status) {
       return `<span class="status-pill ${status}">${status}</span>`;
+    }
+
+    function sleep(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    async function playProcessAnimation(timeline, userText) {
+      const step = document.createElement("div");
+      step.className = "step thinking";
+      step.innerHTML = '<div class="bubble thinking"><span class="thinking-dots">正在理解你的问题</span></div>';
+      timeline.appendChild(step);
+      timeline.scrollTop = timeline.scrollHeight;
+
+      const lower = userText.toLowerCase();
+      const isQuality = userText.includes("质量") || lower.includes("quality");
+      const isReport = userText.includes("报告") || lower.includes("report");
+      const isChart = userText.includes("图") || userText.includes("走势") ||
+        userText.includes("趋势") || lower.includes("chart") || lower.includes("plot");
+      const stages = [
+        "正在理解你的问题",
+        "正在匹配数据集和日期范围",
+        isQuality ? "正在检查数据质量" : (isChart ? "正在生成图表" : "正在调用分析工具"),
+        isReport ? "正在整理报告入口" : (isChart ? "正在整理图表入口" : "正在整理指标结果"),
+      ];
+      const label = step.querySelector(".thinking-dots");
+      for (const stage of stages) {
+        label.textContent = stage;
+        timeline.scrollTop = timeline.scrollHeight;
+        await sleep(230);
+      }
+      label.textContent = "正在生成回答";
+      return step;
     }
 
     function refreshControls() {
@@ -813,12 +922,27 @@
              ${rows}
            </details>`
         : "";
-      // Append a final user-facing summary bubble when the run succeeded.
-      const summary = (runStatus === "succeeded")
-        ? `<div class="step"><div class="bubble selected" data-view="report">已完成分析。点击此处查看报告。</div></div>`
-        : (runStatus === "failed"
-            ? `<div class="step"><div class="bubble tool-failed">分析失败，请查看上面的错误信息。</div></div>`
-            : "");
+      // Append a final user-facing summary bubble. The server returns
+      // ``run.summary`` and ``run.intent`` (set by the planner). When
+      // present we render the planner's message; otherwise we fall back
+      // to a static string for legacy runs.
+      let summary = "";
+      const run = state.activeRun || {};
+      const plannerSummary = run.summary || (runStatus === "succeeded"
+        ? "已完成分析。点击此处查看报告。"
+        : runStatus === "failed"
+          ? "分析失败，请查看上面的错误信息。"
+          : "");
+      if (plannerSummary) {
+        const intentTag = run.intent
+          ? `<span class="intent-tag intent-${escapeHtml(run.intent)}">${escapeHtml(run.intent)}</span>`
+          : "";
+        const cls = runStatus === "succeeded" ? "selected" : (runStatus === "failed" ? "tool-failed" : "");
+        const view = run.report_id
+          ? `data-view="report"`
+          : (run.chart_ids && run.chart_ids.length ? `data-view="chart"` : "");
+        summary = `<div class="step"><div class="bubble ${cls}" ${view}>${intentTag}<span class="bubble-text">${escapeHtml(plannerSummary)}</span></div></div>`;
+      }
       timeline.insertAdjacentHTML("beforeend", summary + toolDetails);
       timeline.scrollTop = timeline.scrollHeight;
     }
@@ -945,6 +1069,29 @@
         console.warn("csv load failed:", e);
         document.querySelector("#tableContainer").innerHTML =
           `<div class="empty-state">CSV 读取失败：${escapeHtml(e.message)}</div>`;
+      }
+    }
+
+    async function deleteDataset(datasetId) {
+      const meta = state.datasets.find((d) => d.dataset_id === datasetId);
+      if (!meta) return;
+      const ok = confirm(`删除数据集 "${meta.asset_id}"？`);
+      if (!ok) return;
+      try {
+        await apiDelete(`/api/sessions/${sessionId}/datasets/${datasetId}`);
+        if (state.activeDatasetId === datasetId) {
+          state.activeDatasetId = null;
+          state.csvCache = null;
+          state.csvRows = [];
+          document.querySelector("#tableTitleText").textContent = "数据表";
+          document.querySelector("#tableMeta").textContent = "尚未选择数据集。";
+          document.querySelector("#tableContainer").innerHTML =
+            '<div class="empty-state">选择左侧的数据集或表格视图以查看内容。</div>';
+          document.querySelector("#rowCount").textContent = "0 行";
+        }
+        await loadDatasets();
+      } catch (e) {
+        alert(`Delete failed: ${e.message}`);
       }
     }
 
@@ -1125,12 +1272,23 @@
       timeline.insertAdjacentHTML("beforeend",
         `<div class="step user"><div class="bubble user">${escapeHtml(text)}</div></div>`);
       input.value = "";
+      let thinkingStep = null;
+      let animation = null;
       try {
-        const data = await apiPostJson(`/api/sessions/${sessionId}/messages`, { text });
+        const request = apiPostJson(`/api/sessions/${sessionId}/messages`, { text });
+        animation = playProcessAnimation(timeline, text);
+        const [data, step] = await Promise.all([request, animation]);
+        thinkingStep = step;
+        thinkingStep.remove();
         state.activeRunId = data.run.run_id;
+        state.activeRun = data.run;
         renderTimeline(data.tool_calls, data.run.status);
         renderRunIntoPreview(data);
       } catch (e) {
+        if (!thinkingStep && animation) {
+          thinkingStep = await animation.catch(() => null);
+        }
+        if (thinkingStep) thinkingStep.remove();
         timeline.insertAdjacentHTML("beforeend",
           `<div class="step"><div class="bubble tool-failed">请求失败：${escapeHtml(e.message)}</div></div>`);
       } finally {

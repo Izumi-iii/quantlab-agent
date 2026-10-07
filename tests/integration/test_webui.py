@@ -97,6 +97,15 @@ def _http_post_json(url: str, body: dict[str, object]) -> tuple[int, bytes, dict
         return exc.code, exc.read(), dict(exc.headers)
 
 
+def _http_delete(url: str) -> tuple[int, bytes, dict[str, str]]:
+    req = urllib.request.Request(url, method="DELETE")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status, resp.read(), dict(resp.headers)
+    except urllib.error.HTTPError as exc:  # type: ignore[attr-defined]
+        return exc.code, exc.read(), dict(exc.headers)
+
+
 def _build_multipart_csv(file_field: str, csv_bytes: bytes, fields: dict[str, str]) -> bytes:
     """Construct a minimal multipart/form-data body without external libs.
 
@@ -187,6 +196,32 @@ def test_upload_then_list_dataset(server: _ServerThread) -> None:
     assert b"date,close" in csv_body
 
 
+def test_delete_dataset_removes_it_from_session(server: _ServerThread) -> None:
+    csv = b"date,close\n2024-01-02,100\n2024-01-03,101\n"
+    body = _build_multipart_csv(
+        "file", csv, {"asset_id": "DEMO_DELETE", "price_basis": "forward_adjusted"}
+    )
+    req = urllib.request.Request(
+        f"{server.url}/api/sessions/{SESSION}/datasets",
+        data=body,
+        method="POST",
+        headers={"Content-Type": "multipart/form-data; boundary=----qlTestBoundary1234567890"},
+    )
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        dataset_id = json.loads(resp.read())["dataset"]["dataset_id"]
+
+    status, body, _ = _http_delete(f"{server.url}/api/sessions/{SESSION}/datasets/{dataset_id}")
+    assert status == 200
+    assert json.loads(body)["deleted"] is True
+
+    status, body, _ = _http_get(f"{server.url}/api/sessions/{SESSION}/datasets")
+    assert status == 200
+    assert json.loads(body)["datasets"] == []
+
+    status, _, _ = _http_get(f"{server.url}/api/sessions/{SESSION}/datasets/{dataset_id}.csv")
+    assert status == 404
+
+
 def test_message_drive_creates_run_with_charts_and_report(server: _ServerThread) -> None:
     # Seed two datasets.
     for asset_id in ("DEMO_A", "DEMO_B"):
@@ -202,10 +237,15 @@ def test_message_drive_creates_run_with_charts_and_report(server: _ServerThread)
         )
         urllib.request.urlopen(req, timeout=5).read()
 
-    # Send a message — drives the demo pipeline.
+    # Send a message — drives the report pipeline (planner maps "生成报告"
+    # to intent=report).
     status, body, _ = _http_post_json(
         f"{server.url}/api/sessions/{SESSION}/messages",
-        {"text": "Compare DEMO_A and DEMO_B in 2024-01"},
+        {
+            "text": "生成报告 DEMO_A 和 DEMO_B 2024-01-02 2024-01-15",
+            "start": "2024-01-02",
+            "end": "2024-01-15",
+        },
     )
     assert status == 200
     payload = json.loads(body)
@@ -234,7 +274,11 @@ def test_chart_png_served(server: _ServerThread) -> None:
     urllib.request.urlopen(req, timeout=5).read()
     _, resp_body, _ = _http_post_json(
         f"{server.url}/api/sessions/{SESSION}/messages",
-        {"text": "Describe DEMO_A"},
+        {
+            "text": "生成报告 DEMO_A 2024-01-02 2024-01-15",
+            "start": "2024-01-02",
+            "end": "2024-01-15",
+        },
     )
     run = json.loads(resp_body)["run"]
     chart_id = run["chart_ids"][0]
@@ -262,7 +306,11 @@ def test_report_markdown_served(server: _ServerThread) -> None:
     urllib.request.urlopen(req, timeout=5).read()
     _, resp_body, _ = _http_post_json(
         f"{server.url}/api/sessions/{SESSION}/messages",
-        {"text": "Describe DEMO_A"},
+        {
+            "text": "生成报告 DEMO_A 2024-01-02 2024-01-15",
+            "start": "2024-01-02",
+            "end": "2024-01-15",
+        },
     )
     run = json.loads(resp_body)["run"]
     status, md, headers = _http_get(
@@ -304,7 +352,7 @@ def test_get_run_returns_state_and_tool_calls(server: _ServerThread) -> None:
     urllib.request.urlopen(req, timeout=5).read()
     _, resp_body, _ = _http_post_json(
         f"{server.url}/api/sessions/{SESSION}/messages",
-        {"text": "x"},
+        {"text": "数据质量怎么样"},
     )
     run_id = json.loads(resp_body)["run"]["run_id"]
 
@@ -336,3 +384,85 @@ def test_path_traversal_in_static_rejected(server: _ServerThread) -> None:
     status, _, _ = _http_get(f"{server.url}/static/..%2F..%2Fetc%2Fpasswd")
     # Either 404 (decoded traversal rejected) or 400; never 200 with file body.
     assert status in (400, 404)
+
+
+# --- Planner-driven paths -------------------------------------------------
+
+
+def _seed_one(server: _ServerThread, asset_id: str = "DEMO_A") -> None:
+    csv = b"date,close\n2024-01-02,100\n2024-01-03,101\n2024-01-04,99\n"
+    body = _build_multipart_csv(
+        "file", csv, {"asset_id": asset_id, "price_basis": "forward_adjusted"}
+    )
+    req = urllib.request.Request(
+        f"{server.url}/api/sessions/{SESSION}/datasets",
+        data=body,
+        method="POST",
+        headers={"Content-Type": "multipart/form-data; boundary=----qlTestBoundary1234567890"},
+    )
+    urllib.request.urlopen(req, timeout=5).read()
+
+
+def test_planner_data_quality_runs_only_inspect(server: _ServerThread) -> None:
+    _seed_one(server)
+    status, body, _ = _http_post_json(
+        f"{server.url}/api/sessions/{SESSION}/messages",
+        {"text": "数据质量怎么样"},
+    )
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["run"]["intent"] == "data_quality"
+    assert payload["run"]["status"] == "succeeded"
+    assert "数据质量检查完成" in payload["run"]["summary"]
+    assert "DEMO_A" in payload["run"]["summary"]
+    assert "未发现质量问题" in payload["run"]["summary"]
+    tool_names = [tc["tool_name"] for tc in payload["tool_calls"]]
+    assert tool_names == ["inspect_dataset"]
+
+
+def test_planner_metrics_intent_runs_three_tools(server: _ServerThread) -> None:
+    _seed_one(server)
+    status, body, _ = _http_post_json(
+        f"{server.url}/api/sessions/{SESSION}/messages",
+        {
+            "text": "DEMO_A 区间收益和最大回撤 2024-01-02 2024-01-15",
+            "start": "2024-01-02",
+            "end": "2024-01-15",
+        },
+    )
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["run"]["intent"] == "metrics"
+    assert payload["run"]["status"] == "succeeded"
+    assert "指标计算完成" in payload["run"]["summary"]
+    assert "DEMO_A" in payload["run"]["summary"]
+    assert "区间收益" in payload["run"]["summary"]
+    assert "最大回撤" in payload["run"]["summary"]
+    tool_names = [tc["tool_name"] for tc in payload["tool_calls"]]
+    assert tool_names == ["inspect_dataset", "prepare_analysis", "compute_metrics"]
+
+
+def test_planner_out_of_scope_marks_failed(server: _ServerThread) -> None:
+    _seed_one(server)
+    status, body, _ = _http_post_json(
+        f"{server.url}/api/sessions/{SESSION}/messages",
+        {"text": "推荐股票"},
+    )
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["run"]["status"] == "failed"
+    assert payload["run"]["failure"]["code"] == "OUT_OF_SCOPE"
+    assert payload["run"]["intent"] == "out_of_scope"
+
+
+def test_planner_response_carries_summary_and_intent(server: _ServerThread) -> None:
+    _seed_one(server)
+    status, body, _ = _http_post_json(
+        f"{server.url}/api/sessions/{SESSION}/messages",
+        {"text": "数据质量怎么样"},
+    )
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["run"]["intent"] == "data_quality"
+    assert payload["run"]["summary"]  # non-empty string
+    assert payload["run"]["plan_summary"]  # non-empty string

@@ -86,6 +86,17 @@ UUID `dataset_id` for each imported asset, `inspect_dataset` confirms
 quality, then `prepare_analysis` → `compute_metrics` → `create_charts`
 → `build_report` produces the Markdown report.
 
+The natural-language surface is a **Planner layer** (see
+`Docs/PROJECT_PLAN.md §9.5`): every message is first routed through
+`RulePlanner` (default) or `LLMPlanner` (when `QUANTLAB_MODEL_*` env
+vars are set), then resolved by `PlanValidator`, then executed by
+`PlanExecutor`. The supported `Intent`s in the first slice are
+`data_quality` (inspect only, then `succeeded`), `metrics` (inspect + prepare + compute, then `succeeded`),
+`report` (full pipeline + Markdown), `clarify` (run enters
+`needs_clarification` with a clarifying question), and `out_of_scope`
+(run marked `failed`). Different requests produce different intents,
+different dataset picks, and different tool paths.
+
 ### Local web UI
 
 ```powershell
@@ -137,12 +148,15 @@ Routes:
 The server uses the same `default_demo_controller` graph as the CLI
 demo; switching to a real-model stack is a `WebState` swap.
 
-Current limitation: this two-pane UI still uses a deterministic demo
-pipeline for `/messages`, so different natural-language prompts may drive
-the same tool path. The planned upgrade is a controlled planner layer
-(`AnalysisPlan` → validation → deterministic execution) so user requests
-can select datasets, metrics, charts, reports, clarifications, or
-out-of-scope refusals. See `Docs/PROJECT_PLAN.md §9.5`.
+The `/messages` endpoint runs the **Planner layer** (§9.5): each
+message goes through `RulePlanner.plan → PlanValidator.validate →
+PlanExecutor.execute`. Different requests produce different `intent`s
+(e.g. "数据质量怎么样" → `data_quality` only runs `inspect_dataset`;
+"比较 DEMO_A 最大回撤" → `metrics` runs inspect + prepare + compute;
+"推荐股票" → `out_of_scope` and the run enters `failed`). The run's
+`intent` and planner-generated summary are returned alongside the run
+record and rendered as a colored pill + summary bubble in the
+timeline.
 
 **Note**: cancelling in the UI ("Reset UI" button) does not stop an
 already-running background analysis. The cooperative cancellation rule

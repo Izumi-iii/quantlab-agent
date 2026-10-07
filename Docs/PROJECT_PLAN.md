@@ -1199,6 +1199,7 @@ runs/<run_id>/
 - [x] 完成 M5 评估集：E01–E24 中 16 项可本地验证、8 项标记 deferred 待 M3。
 - [x] 完成 M3：OpenAI-compatible ModelProvider Adapter + AgentController 主循环 + CLI `chat` 子命令 + Streamlit Real Model tab。用户只需配置 `QUANTLAB_MODEL_BASE_URL` / `QUANTLAB_MODEL_API_KEY` / `QUANTLAB_MODEL_NAME` 即可接入 OpenAI / DeepSeek / Moonshot / 智谱 / 豆包 / 通义千问 / 百度千帆 等所有 OpenAI 兼容端点。
 - [x] 在 M3 主线之上新增 `list_datasets` 工具：让模型在 `inspect_dataset` 之前能拿到真实 UUID，避免再因误用 asset_id 触发 PROTOCOL_ERROR。
+- [x] 完成 M6 Planner Layer 第一轮切片：Planner / PlanValidator / PlanExecutor 三层结构、RulePlanner / LLMPlanner、Intent 枚举、AnalysisPlan / ResolvedPlan、6 个 `Intent` 意图分支、`webui/server.py` 接入、`evaluation/cases.jsonl` 加 E25-E28。
 
 ### 19.2 尚未完成
 
@@ -1211,27 +1212,32 @@ runs/<run_id>/
 - [x] 实现本地 UI（M4）。
 - [x] 准备 E01–E24 评估集（M5）。
 - [x] 实现真实模型适配器（M3）。
+- [x] Planner Layer 第一轮切片（M6 §9.5）：不同自然语言产生不同 intent / 工具路径；E25-E28 全过。
+- [ ] LLMPlanner 手动 smoke（需用户配 `QUANTLAB_MODEL_*`）。
+- [ ] 多轮澄清 UI（`clarify` 状态时把 agent 提问显示在 composer 上方）。
+- [ ] `chart` intent 真正落地（§9.5.5 `chart` 行）。
 - [ ] 把 8 项 deferred 评估用例切到模型驱动模式并跑通。
 - [ ] 录制演示、整理简历表述。
 
 ### 19.3 当前验证状态
 
-- 功能代码：M1 确定性核心、M2 工具层与持久化、M4 Streamlit UI、M5 评估集、M3 真实模型适配器全部完成。
-- 依赖安装：已在本地 `.venv` 安装项目开发依赖；尚未建立锁文件。M3 不引入新依赖（用 stdlib `urllib`）。
-- 模型 API：可选用。配置三个 `QUANTLAB_MODEL_*` 环境变量即可启用；未配置时跑 demo 模式。
-- 自动化测试：Python 3.14.0 下 141 项通过（含 list_datasets + dynamic controller + webui 集成测试）。
-- Agent 评估：本地可验证 16 项全过；8 项 deferred（E11/E12/E16/E17/E20/E21/E23/E24）——配置模型后可手动驱动。
+- 功能代码：M1 确定性核心、M2 工具层与持久化、M4 Streamlit UI、M5 评估集、M3 真实模型适配器、M6 Planner Layer 第一轮切片完成。
+- 依赖安装：已在本地 `.venv` 安装项目开发依赖；尚未建立锁文件。M3 不引入新依赖（用 stdlib `urllib`）。M6 不引入新依赖。
+- 模型 API：可选用。配置三个 `QUANTLAB_MODEL_*` 环境变量即可启用；未配置时跑 demo 模式。`LLMPlanner` 在配置后自动启用。
+- 自动化测试：Python 3.14.0 下 179 项通过（planner/validator/executor 单元 + 集成 + webui planner 路径已覆盖 leaf intent 成功态、effective 日期执行窗口、空 dataset_refs 多数据集解析）。
+- Agent 评估：本地可验证 20 项全过（16 ready 旧 + 4 ready 新 planner）；8 项 deferred（E11/E12/E16/E17/E20/E21/E23/E24）——配置模型后可手动驱动。
 - 部署：未开展。
 - Git 提交或推送：未执行。
 
 ### 19.4 下一阶段任务
 
 1. （可选）手动跑 `python -m evaluation.runner` 同时带上模型配置，把 8 项 deferred 跑通，把结果贴进 PROJECT_PLAN §20。
-2. 录制 2–3 分钟演示视频：CLI demo → UI 上传 CSV 跑真实场景 → UI Real Model tab 用真模型聊天 → `evaluation.runner` 输出 16+8 项表格。
-3. 简历表述打磨：把"M1 拆确定性 → M2 工具链 → M4 UI → M5 评估 → M3 真实模型" 这条线写进项目说明。
+2. 录制 2–3 分钟演示视频：CLI demo → UI 上传 CSV 跑真实场景 → UI Real Model tab 用真模型聊天 → `evaluation.runner` 输出 20+8 项表格。
+3. 简历表述打磨：把"M1 拆确定性 → M2 工具链 → M4 UI → M5 评估 → M3 真实模型 → M6 Planner" 这条线写进项目说明。
 
 - 若优先投开发岗展示完整产品，可先做本地 UI：上传 CSV、选择 demo、展示指标、图表、报告和工具调用记录。
 - 若优先突出 Agent 能力，可先实现 Provider Protocol、Fake Provider 测试和真实模型工具循环；真实模型接入前需要确定服务商、模型和密钥方式。
+- 接下来建议先做 M6 第二轮切片：`chart` intent、多轮澄清 UI、plan 确认交互；再做 LLMPlanner 手动 smoke。
 
 ## 20. 接续记录模板与维护规则
 
@@ -1373,6 +1379,20 @@ runs/<run_id>/
 - 新增或修改的决策：(1) 用 stdlib `http.server` 而不是 FastAPI/Flask——M3 明确"不引入 httpx/FastAPI 等大依赖"，项目代码全是同步，`ThreadingHTTPServer` + 一个 `BaseHTTPRequestHandler` 子类足以承载 ~8 个端点（参考 explore agent 的报告）。(2) 客户端 UUID 存 localStorage 而不是服务端分配——避免引入 session 注册端点，与 demo 中"session id 在 sidebar 显示"的心智模型一致。(3) multipart 解析手写而不是装 `python-multipart`——3.14 的 stdlib 已经没有了 `cgi`，写 30 行正则分割比加依赖更轻。(4) `_check_reference_ownership` 沿用"`inspect_dataset` 始终放行"——之前 list_datasets 那一轮已经把 `inspect_dataset` 从 ownership 检查里摘出来，这一轮没动它。(5) 图表只展示第一张：和"Quick chart"语义一致（demo 里也只有一张），多图轮播留到下一个 demo。(6) 错误一律 400（`BadRequest` / `QuantLabError`）：简化客户端处理，500 仅留作兜底。
 - 下一步：(1) 真实模型 wiring + UI 内的 model config 输入框；(2) 多轮对话：当前 run 用 needs_clarification 状态时，UI 把 `failure.details.model_text` 显示在 composer 上方作为"agent 提问"，用户再 send 时把 `original_request + agent_question + user_reply` 拼起来作为新 request；(3) rail 四个图标挂上真实路由（至少 Datasets 跳到 `/datasets` 子页列出所有 session、Process 跳到 `/runs/{rid}/process` 子页只显示 tool_calls）；(4) 浏览器手工 smoke + 录演示视频。
 - 是否需要用户补充信息：可选——若用户希望 demo 默认就调真实模型而非 demo controller，需要确定 base_url/api_key/model 走 env 还是 UI 输入。
+
+### 2026-10-05：M6 Planner Layer（第一轮切片）
+
+- 本次目标：实现 §9.5 设计的 Planner / PlanValidator / PlanExecutor 三层结构，让 WebUI `/messages` 真正按自然语言驱动分析路径——不同请求应该产生不同 `intent`、不同数据集选择、不同指标、不同工具路径。第一轮只支持 `data_quality` / `metrics` / `report` 三类 `Intent`；`chart` / 多轮澄清 UI / 完整 plan 确认留到下一轮。
+- 实际完成：(1) `domain/models.py` 新增 `Intent`、`DateRange`、`AnalysisPlan`（FrozenModel，含意图校验）、`ResolvedPlan`；`domain/errors.py` 新增 `ErrorCode.OUT_OF_SCOPE` 和 `NEEDS_CLARIFICATION`。(2) `agent/planner.py` 新增 `Planner` Protocol、`PlannerError`、`PlannerContext`、`RulePlanner`（关键字+正则匹配，复用 controller 里的 `is_supported_analysis_request` scope gate；包含 data_quality/metrics/report/clarify/out_of_scope 五种意图分发）、`LLMPlanner`（驱动 `ModelProvider` 拿 JSON，去掉 markdown 围栏；parse 失败时抛 `PlannerError`）。(3) `agent/plan_validator.py` 新增 `PlanValidator`（`DatasetResolver` Protocol、`ClarificationRequest`、`OutOfScopeError`），用 `LocalDatasetStore.list_in_session` 把 `dataset_refs`（asset_id / UUID / 文件名 `.csv` 后缀）映射成当前 session 的 UUID，把 `date_range` 裁剪到数据集覆盖区间；空 session 抛 `INVALID_ARGUMENT`，未知 ref 多数据集时返回 0 个 resolved ID（上游 `INVALID_ARGUMENT` 兜底）。(4) `agent/plan_executor.py` 新增 `PlanExecutor`：每个 intent 一个分支，调现有 `ToolRegistry.execute`；`data_quality` 只 inspect、`metrics` inspect+prepare+compute、`report` 全 5 步（build_report 触发 mark_succeeded）；`clarify` 走 `mark_needs_clarification`；`out_of_scope` 走 `mark_failed`。每一步把 `intent` / `plan_summary` / `user_visible_summary` / `requested_*` 写到 `Run.context_snapshot` 让 UI 显示。(5) `agent/planner_factory.py`：`build_planner(model_config)` 在配置时返回 `LLMPlanner`，否则返回 `RulePlanner`。(6) WebUI 集成到 `webui/server.py`：`WebState` 加 `planner` / `plan_validator` / `plan_executor` / `registry` / `run_service` 字段；`_handle_post_message` 改成 planner→validator→executor 链；`_serialize_run` 加 `intent` / `plan_summary` / `summary`（planner 摘要 + 兜底）；`_apply_legacy_overrides` 让 JSON body 的 `start` / `end` / `metrics` 仍可作 plan 后的补丁。(8) `webui/static/index.html` 把 `run.intent` 渲染成 timeline 顶部色码胶囊，`run.summary` 替换静态 "已完成分析" 字符串。(9) `evaluation/runner.py` 加 `mode == "planner_unit"` 分派 + `_run_planner_unit` helper。(10) `evaluation/cases.jsonl` 加 E25-E28 四项用例覆盖四种核心 intent。(11) 单元测试 25 项（`test_planner.py` 11、`test_plan_validator.py` 9、`test_plan_executor.py` 5）+ 集成测试 9 项（`test_plan_pipeline.py` 6、`test_webui.py` 加 4 个 planner 路径）。(12) §19.1 状态、§19.2 未完成、§19.3 验证状态、§19.4 下一步同步更新。
+- 修改文件：`src/quantlab_agent/domain/{models,errors}.py`、`src/quantlab_agent/agent/{planner,plan_validator,plan_executor,planner_factory}.py`（新增）、`src/quantlab_agent/agent/controller.py`、`webui/server.py`、`webui/static/index.html`、`evaluation/runner.py`、`evaluation/cases.jsonl`、`tests/unit/test_planner.py`、`tests/unit/test_plan_validator.py`、`tests/unit/test_plan_executor.py`、`tests/integration/test_plan_pipeline.py`、`tests/integration/test_webui.py`、本规划。
+- 验证命令及结果：`.\.venv\Scripts\python.exe -m pytest`，179 项通过；`.\.venv\Scripts\python.exe -m evaluation.runner`，20 passed, 0 failed, 8 skipped（E25-E28 planner_unit 全过且 E25/E26 检查 succeeded 状态）；`.\.venv\Scripts\ruff.exe check src tests app.py evaluation webui` 通过；`.\.venv\Scripts\ruff.exe format --check src tests app.py evaluation webui` 通过。
+- 实际模型与运行模式：未调真实模型；测试用 `FakeProvider` 驱动 `LLMPlanner`；WebUI 默认走 `RulePlanner`（不需 model 配置）；当用户配 `QUANTLAB_MODEL_*` 时，`build_state(model_config=...)` 自动切到 `LLMPlanner`。
+- 失败／未验证事项：(1) 真实模型手动 smoke 未做——需要用户在本地设 `QUANTLAB_MODEL_*` 环境变量后跑 `quantlab-agent ui`，看 `LLMPlanner` 是否把 "比较 DEMO_A 最大回撤" 转成 `{intent:metrics, metrics:[max_drawdown]}` 这样的结构化 plan。(2) UI 没做多轮澄清——`clarify` 已能落 `NEEDS_CLARIFICATION`，但前端没把"agent 提问"显示在 composer 上方。下一轮做。
+- 新增或修改的决策：(1) `Intent` 用 StrEnum，跟 `RunStatus` / `MetricName` 一致。(2) `AnalysisPlan` 冻结为 Pydantic `FrozenModel`——跟 `AnalysisSpec` / `Run` 同类，符合 ADR-003 "模型输出视为不可信输入"。`AnalysisPlan` 的 `@model_validator` 在构造时直接拒绝 `intent=metrics` 但 `metrics=` 为空这种非法组合。(3) `PlanValidator._resolve_dataset_refs` 不抛错而是悄悄丢弃未知 ref，让上层看到 `resolved_ids=()` 时统一抛 `INVALID_ARGUMENT`——避免 ploymorphism 引入额外异常类。(5) `Executor` 不引新工具，只组合现有 6 个；`data_quality` 不调 `prepare_analysis`，避免副作用"提前 bind dataset"。(6) `_apply_legacy_overrides` 在 validator 之后用 `model_copy` 覆盖 date_range/metrics——保持向后兼容：原 form-driven JSON body 仍然能工作。(7) `_serialize_run` 既读 `context_snapshot["intent"]` 又读 `failure.details["intent"]`——`out_of_scope` 不进 `_execute_resolved`，所以 intent 留在 failure.details；其它 intent 走 snapshot。
+- 修正记录（2026-10-05 二次 review）：(1) `data_quality` / `metrics` / `chart` 叶子 intent 在工具成功后显式 `mark_succeeded`，不再停留在 `running`。(2) `PlanExecutor` 使用 `effective_start` / `effective_end` 作为 `prepare_analysis` 的执行窗口，`requested_start` / `requested_end` 只保留原始请求；WebUI legacy override 改日期时同步重算 effective range。(3) `dataset_refs=()` 统一解释为当前 session 全部数据集；未知非空 ref 仍触发 `INVALID_ARGUMENT`。(4) RulePlanner 识别“走势/对比走势”类 compare-only 请求，按默认 metrics 路径处理，避免 UI 建议词直接进入 clarify。(5) `QuantLabError` 构造改用 `ErrorCode.INVALID_ARGUMENT` 枚举而不是裸字符串。
+- 下一步：(1) LLMPlanner 手动 smoke（设 env 跑 `quantlab-agent ui`）；(2) 多轮澄清 UI（§9.5 P0 第 2 点）；(3) `chart intent` 真正落地（§9.5.5 `chart` 行）；(4) 录演示视频 + 简历表述打磨。
+- 是否需要用户补充信息：可选——`LLMPlanner` 手动 smoke 需要用户的 model 凭证；其余工作不需要。
+
 ## 21. 参考依据与使用限制
 
 - 项目名称和初始描述来自当前仓库 README：`A tool-calling agent for reproducible financial data analysis.`
