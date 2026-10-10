@@ -20,19 +20,18 @@ from evaluation.runner import (
 )
 
 
-def test_load_cases_returns_28_entries() -> None:
+def test_load_cases_returns_35_entries() -> None:
     cases = load_cases()
-    assert len(cases) == 28
-    assert {c["case_id"] for c in cases} == {f"E{i:02d}" for i in range(1, 29)}
+    assert len(cases) == 35
+    assert {c["case_id"] for c in cases} == {f"E{i:02d}" for i in range(1, 36)}
 
 
 def test_load_cases_status_split() -> None:
     cases = load_cases()
     ready = [c for c in cases if c["status"] == "ready"]
     deferred = [c for c in cases if c["status"] == "deferred"]
-    # 24 cases from PROJECT_PLAN §13.3 + 4 planner cases added in M6;
-    # 8 require a real model.
-    assert len(ready) == 20
+    # 24 from §13.3 + 4 M6 + 3 M7 + 4 M8/M9; 8 still require a real model.
+    assert len(ready) == 27
     assert len(deferred) == 8
 
 
@@ -104,7 +103,7 @@ def test_runner_cli_exit_code_zero_when_all_pass() -> None:
     assert proc.returncode == 0, (
         f"Runner exited with {proc.returncode}\nstdout: {proc.stdout}\nstderr: {proc.stderr}"
     )
-    assert "20 passed" in proc.stdout
+    assert "27 passed" in proc.stdout
     assert "8 skipped" in proc.stdout
 
 

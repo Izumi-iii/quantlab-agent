@@ -85,6 +85,12 @@ _IN_SCOPE_TERMS = (
     "report",
     "analysis",
     "compare",
+    "risk",
+    "sharpe",
+    "sortino",
+    "calmar",
+    "var",
+    "cvar",
     "demo_",
     "数据",
     "数据集",
@@ -99,6 +105,11 @@ _IN_SCOPE_TERMS = (
     "报告",
     "分析",
     "比较",
+    "风险",
+    "稳不稳",
+    "稳",
+    "夏普",
+    "在险价值",
 )
 
 

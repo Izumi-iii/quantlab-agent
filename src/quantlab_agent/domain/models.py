@@ -96,6 +96,30 @@ class DatasetManifest(FrozenModel):
     quality_report: QualityReport
 
 
+class ColumnProfile(FrozenModel):
+    """Per-column summary used by ``profile_dataset``."""
+
+    name: str = Field(min_length=1, max_length=64)
+    semantic_type: Literal["date", "numeric_price"]
+    missing_count: int = Field(ge=0)
+    unique_count: int = Field(ge=0)
+    min: str | float | int | None = None
+    max: str | float | int | None = None
+    mean: float | None = None
+    std: float | None = None
+
+
+class DatasetProfile(FrozenModel):
+    """Whole-dataset summary emitted by the profile service."""
+
+    schema_version: Literal["profile-v1"] = "profile-v1"
+    dataset_id: str
+    asset_id: str
+    row_count: int = Field(ge=0)
+    columns: tuple[ColumnProfile, ...]
+    quality_summary: dict[str, Any] = Field(default_factory=dict)
+
+
 class PricePoint(FrozenModel):
     date: date
     close: float = Field(gt=0, allow_inf_nan=False)
@@ -228,6 +252,81 @@ class ToolStatus(StrEnum):
 class ChartKind(StrEnum):
     NORMALIZED_PRICES = "normalized_prices"
     DRAWDOWN = "drawdown"
+    ROLLING_RETURN = "rolling_return"
+    ROLLING_VOLATILITY = "rolling_volatility"
+    ROLLING_DRAWDOWN = "rolling_drawdown"
+
+
+class RiskMetricName(StrEnum):
+    """Risk metrics produced by ``compute_risk_metrics``.
+
+    Deliberately distinct from ``MetricName`` so that ``compute_metrics``
+    (basic indicators: period return, max drawdown, annualized
+    volatility) and ``compute_risk_metrics`` (risk indicators: Sharpe,
+    Sortino, Calmar, VaR, CVaR, etc.) own disjoint outputs. The
+    design doc §5.2 / §2.6 mandates this separation to keep the
+    evidence chain unambiguous.
+    """
+
+    SHARPE_RATIO = "sharpe_ratio"
+    SORTINO_RATIO = "sortino_ratio"
+    CALMAR_RATIO = "calmar_ratio"
+    VAR_95 = "var_95"
+    CVAR_95 = "cvar_95"
+    MEAN_DAILY_RETURN = "mean_daily_return"
+    STD_DAILY_RETURN = "std_daily_return"
+    ANNUALIZED_RETURN = "annualized_return"
+
+
+class AnomalyKind(StrEnum):
+    EXTREME_NEGATIVE_RETURN = "extreme_negative_return"
+    EXTREME_POSITIVE_RETURN = "extreme_positive_return"
+    PRICE_GAP = "price_gap"
+    REPEATED_DATE = "repeated_date"
+
+
+class AnomalySeverity(StrEnum):
+    WARNING = "warning"
+    INFO = "info"
+
+
+class AnomalyItem(FrozenModel):
+    date: str
+    kind: AnomalyKind
+    severity: AnomalySeverity
+    value: float | None = None
+    message: str
+
+
+class AnomalyReport(FrozenModel):
+    schema_version: Literal["anomaly-v1"] = "anomaly-v1"
+    analysis_id: str
+    asset_anomalies: tuple[tuple[str, tuple[AnomalyItem, ...]], ...]
+    parameters: dict[str, float]
+
+
+class RollingPoint(FrozenModel):
+    date: str
+    value: float | None
+
+
+class RollingSeries(FrozenModel):
+    asset_id: str
+    metric: Literal[
+        "rolling_return",
+        "rolling_volatility",
+        "rolling_drawdown",
+        "rolling_sharpe",
+    ]
+    window: int = Field(ge=2)
+    points: tuple[RollingPoint, ...]
+
+
+class RollingReport(FrozenModel):
+    schema_version: Literal["rolling-v1"] = "rolling-v1"
+    analysis_id: str
+    windows: tuple[int, ...]
+    series: tuple[RollingSeries, ...]
 
 
 # ---------------------------------------------------------------------------
@@ -241,19 +340,35 @@ class Intent(StrEnum):
     Maps to the state machine / tool chain:
 
       data_quality  → list_datasets + inspect_dataset
+      profile       → list_datasets + inspect_dataset + profile_dataset
       metrics       → list_datasets + inspect_dataset + prepare + compute
-      chart         → list_datasets + inspect_dataset + prepare + create_charts
+      chart         → list_datasets + inspect_dataset + prepare + compute + create_charts
       report        → full 5-tool chain + build_report
       clarify       → mark NEEDS_CLARIFICATION, no tools
       out_of_scope  → mark FAILED(OUT_OF_SCOPE), no tools
     """
 
     DATA_QUALITY = "data_quality"
+    PROFILE = "profile"
     METRICS = "metrics"
     CHART = "chart"
     REPORT = "report"
     CLARIFY = "clarify"
     OUT_OF_SCOPE = "out_of_scope"
+
+
+class AnalysisExtra(StrEnum):
+    """Optional sub-actions attached to ``metrics`` / ``data_quality`` /
+    ``chart`` intents. Stored on ``AnalysisPlan.extras``.
+
+    The planner sets these from user keywords; the executor branches on
+    them after the main intent pipeline finishes.
+    """
+
+    DESCRIBE_PRICE_SERIES = "describe_price_series"
+    RISK = "risk"
+    ANOMALIES = "anomalies"
+    ROLLING = "rolling"
 
 
 class DateRange(FrozenModel):
@@ -274,7 +389,9 @@ class AnalysisPlan(FrozenModel):
     asset_ids or filenames that the validator resolves to session UUIDs;
     ``metrics`` and ``charts`` are subsets of the closed enums. The
     validator fills in ``resolved_dataset_ids`` and clamps the date range
-    to dataset coverage.
+    to dataset coverage. ``extras`` is an optional list of
+    ``AnalysisExtra`` actions that hang off the main pipeline (describe /
+    summarize/ risk / anomalies / rolling).
     """
 
     schema_version: Literal["plan-v1"] = "plan-v1"
@@ -283,6 +400,7 @@ class AnalysisPlan(FrozenModel):
     date_range: DateRange | None = None
     metrics: tuple[MetricName, ...] = ()
     charts: tuple[ChartKind, ...] = ()
+    extras: tuple["AnalysisExtra", ...] = ()
     clarifying_question: str | None = None
     user_visible_summary: str = ""
 
@@ -316,6 +434,7 @@ class ResolvedPlan(FrozenModel):
     effective_end: date | None = None
     metrics: tuple[MetricName, ...] = ()
     charts: tuple[ChartKind, ...] = ()
+    extras: tuple["AnalysisExtra", ...] = ()
     clarifying_question: str | None = None
     user_visible_summary: str = ""
     plan_summary: str = ""
@@ -366,6 +485,65 @@ class ToolCallRecord(FrozenModel):
     completed_at: datetime | None = None
     result_envelope: ToolResultEnvelope | None = None
     error_code: str | None = None
+
+
+class AssetSeriesSummary(FrozenModel):
+    """Per-asset descriptive statistics for ``PriceSeriesSummary``."""
+
+    asset_id: str
+    start_price: float | None
+    end_price: float | None
+    min_price: float | None
+    min_price_date: str | None
+    max_price: float | None
+    max_price_date: str | None
+    total_return: float | None
+    up_days: int | None
+    down_days: int | None
+    flat_days: int | None
+    max_daily_gain: float | None
+    max_daily_gain_date: str | None
+    max_daily_loss: float | None
+    max_daily_loss_date: str | None
+    longest_up_streak: int | None
+    longest_down_streak: int | None
+
+
+class PriceSeriesSummary(FrozenModel):
+    """Output of the descriptive service.
+
+    Captures summary statistics for every asset in the prepared analysis.
+    Intended to be human-readable from the WebUI bubble and persisted
+    alongside the run.
+    """
+
+    schema_version: Literal["describe-v1"] = "describe-v1"
+    analysis_id: str
+    effective_start: str
+    effective_end: str
+    alignment_policy: str
+    assets: tuple[AssetSeriesSummary, ...]
+    assumptions: str = ""
+
+
+class AssetRiskResult(FrozenModel):
+    """Per-asset risk indicators produced by ``RiskAnalysisService``."""
+
+    asset_id: str
+    values: dict[RiskMetricName, float]
+    unavailable: dict[str, str] = Field(default_factory=dict)
+
+
+class RiskAnalysisResult(FrozenModel):
+    """Output of the risk analysis service."""
+
+    schema_version: Literal["risk-v1"] = "risk-v1"
+    analysis_id: str
+    annualization_factor: int = Field(ge=1)
+    risk_free_rate: float
+    confidence_level: float
+    assets: tuple[AssetRiskResult, ...]
+    assumptions: str = ""
 
 
 class ChartArtifact(FrozenModel):

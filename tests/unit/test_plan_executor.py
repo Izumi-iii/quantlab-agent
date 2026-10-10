@@ -228,6 +228,7 @@ def test_executor_chart_runs_inspect_prepare_create_charts(tmp_path: Path) -> No
     assert tool_names == [
         "inspect_dataset",
         "prepare_analysis",
+        "compute_metrics",
         "create_charts",
     ]
     assert final.status is RunStatus.SUCCEEDED

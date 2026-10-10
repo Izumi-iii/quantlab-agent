@@ -14,11 +14,14 @@ error is left in the run's ``tool_calls.jsonl`` for the UI to render.
 
 from __future__ import annotations
 
+from typing import Any
+
 from quantlab_agent.agent.plan_validator import ClarificationRequest, OutOfScopeError
 from quantlab_agent.agent.tools import ToolRegistry
 from quantlab_agent.application.runs import RunService
 from quantlab_agent.domain.errors import ErrorCode, QuantLabError
 from quantlab_agent.domain.models import (
+    AnalysisExtra,
     ChartKind,
     Intent,
     MetricName,
@@ -97,6 +100,8 @@ class PlanExecutor:
             snapshot["execution_end"] = plan.effective_end.isoformat()
         metrics_for_execution = plan.metrics or self._default_metrics()
         snapshot["requested_metrics"] = [m.value for m in metrics_for_execution]
+        if plan.extras:
+            snapshot["extras"] = [e.value for e in plan.extras]
         if plan.user_visible_summary:
             snapshot["user_visible_summary"] = plan.user_visible_summary
         self._runs.update_context_snapshot(run_id, session_id, snapshot)
@@ -109,7 +114,10 @@ class PlanExecutor:
             )
 
         if plan.intent is Intent.DATA_QUALITY:
-            return self._execute_data_quality(run_id, session_id, dataset_ids)
+            return self._execute_data_quality(run_id, session_id, dataset_ids, extras=plan.extras)
+
+        if plan.intent is Intent.PROFILE:
+            return self._execute_profile(run_id, session_id, dataset_ids)
 
         if plan.intent is Intent.METRICS:
             return self._execute_metrics(
@@ -117,6 +125,7 @@ class PlanExecutor:
                 session_id,
                 dataset_ids,
                 metrics=metrics_for_execution,
+                extras=plan.extras,
             )
 
         if plan.intent is Intent.REPORT:
@@ -134,6 +143,7 @@ class PlanExecutor:
                 session_id,
                 dataset_ids,
                 charts=plan.charts or self._default_chart_kinds(),
+                extras=plan.extras,
             )
 
         raise QuantLabError(
@@ -148,13 +158,35 @@ class PlanExecutor:
         run_id: str,
         session_id: str,
         dataset_ids: list[str],
+        *,
+        extras: tuple[AnalysisExtra, ...] = (),
     ) -> Run:
+        last_analysis_id: str | None = None
         for ds_id in dataset_ids:
             env = self._registry.execute(
                 run_id=run_id,
                 session_id=session_id,
                 tool_name="inspect_dataset",
                 arguments={"dataset_id": ds_id},
+            )
+            if not env.ok:
+                return self._runs.get_run(run_id, session_id)
+        if AnalysisExtra.ANOMALIES in extras:
+            # Need a prepared analysis for ``detect_anomalies``.
+            env = self._registry.execute(
+                run_id=run_id,
+                session_id=session_id,
+                tool_name="prepare_analysis",
+                arguments=self._build_prepare_args(run_id, session_id, dataset_ids),
+            )
+            if not env.ok or not isinstance(env.data, dict):
+                return self._runs.get_run(run_id, session_id)
+            last_analysis_id = env.data.get("analysis_id")
+            env = self._registry.execute(
+                run_id=run_id,
+                session_id=session_id,
+                tool_name="detect_anomalies",
+                arguments={"analysis_id": last_analysis_id},
             )
             if not env.ok:
                 return self._runs.get_run(run_id, session_id)
@@ -167,6 +199,7 @@ class PlanExecutor:
         dataset_ids: list[str],
         *,
         metrics: tuple[MetricName, ...],
+        extras: tuple[AnalysisExtra, ...] = (),
     ) -> Run:
         env = self._call_inspect(run_id, session_id, dataset_ids)
         if env is not None and not env.ok:
@@ -183,6 +216,51 @@ class PlanExecutor:
         )
         if not env.ok:
             return self._runs.get_run(run_id, session_id)
+
+        if AnalysisExtra.DESCRIBE_PRICE_SERIES in extras:
+            env = self._registry.execute(
+                run_id=run_id,
+                session_id=session_id,
+                tool_name="describe_price_series",
+                arguments={"analysis_id": analysis_id},
+            )
+            if not env.ok:
+                return self._runs.get_run(run_id, session_id)
+
+        if AnalysisExtra.RISK in extras:
+            env = self._registry.execute(
+                run_id=run_id,
+                session_id=session_id,
+                tool_name="compute_risk_metrics",
+                arguments={"analysis_id": analysis_id},
+            )
+            if not env.ok:
+                return self._runs.get_run(run_id, session_id)
+        return self._runs.mark_succeeded(run_id, session_id)
+
+    def _execute_profile(
+        self,
+        run_id: str,
+        session_id: str,
+        dataset_ids: list[str],
+    ) -> Run:
+        for ds_id in dataset_ids:
+            inspect_env = self._registry.execute(
+                run_id=run_id,
+                session_id=session_id,
+                tool_name="inspect_dataset",
+                arguments={"dataset_id": ds_id},
+            )
+            if not inspect_env.ok:
+                return self._runs.get_run(run_id, session_id)
+            env = self._registry.execute(
+                run_id=run_id,
+                session_id=session_id,
+                tool_name="profile_dataset",
+                arguments={"dataset_id": ds_id},
+            )
+            if not env.ok:
+                return self._runs.get_run(run_id, session_id)
         return self._runs.mark_succeeded(run_id, session_id)
 
     def _execute_report(
@@ -243,15 +321,31 @@ class PlanExecutor:
         dataset_ids: list[str],
         *,
         charts: tuple[ChartKind, ...],
+        extras: tuple[AnalysisExtra, ...] = (),
     ) -> Run:
-        # Stub — chart-only intent ships in M7; for now we run
-        # inspect + prepare + create_charts.
         env = self._call_inspect(run_id, session_id, dataset_ids)
         if env is not None and not env.ok:
             return self._runs.get_run(run_id, session_id)
         if not isinstance(env.data, dict) or "analysis_id" not in env.data:
             return self._runs.get_run(run_id, session_id)
         analysis_id = env.data["analysis_id"]
+        env = self._registry.execute(
+            run_id=run_id,
+            session_id=session_id,
+            tool_name="compute_metrics",
+            arguments={"analysis_id": analysis_id},
+        )
+        if not env.ok:
+            return self._runs.get_run(run_id, session_id)
+        if AnalysisExtra.ROLLING in extras:
+            env = self._registry.execute(
+                run_id=run_id,
+                session_id=session_id,
+                tool_name="compute_rolling_metrics",
+                arguments={"analysis_id": analysis_id, "windows": [20, 60, 252]},
+            )
+            if not env.ok:
+                return self._runs.get_run(run_id, session_id)
         env = self._registry.execute(
             run_id=run_id,
             session_id=session_id,
@@ -266,6 +360,33 @@ class PlanExecutor:
         return self._runs.mark_succeeded(run_id, session_id)
 
     # -- helpers ------------------------------------------------------------
+
+    def _build_prepare_args(
+        self,
+        run_id: str,
+        session_id: str,
+        dataset_ids: list[str],
+    ) -> dict[str, Any]:
+        run = self._runs.get_run(run_id, session_id)
+        snapshot = run.context_snapshot or {}
+        requested_start = snapshot.get(
+            "execution_start",
+            snapshot.get("effective_start", "2024-01-02"),
+        )
+        requested_end = snapshot.get(
+            "execution_end",
+            snapshot.get("effective_end", "2024-01-15"),
+        )
+        requested_metrics = snapshot.get(
+            "requested_metrics",
+            [m.value for m in self._default_metrics()],
+        )
+        return {
+            "dataset_ids": dataset_ids,
+            "requested_start": requested_start,
+            "requested_end": requested_end,
+            "requested_metrics": list(requested_metrics),
+        }
 
     def _call_inspect(
         self,

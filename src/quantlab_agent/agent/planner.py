@@ -26,6 +26,7 @@ from typing import Any, Protocol
 
 from quantlab_agent.agent.controller import is_supported_analysis_request
 from quantlab_agent.domain.models import (
+    AnalysisExtra,
     AnalysisPlan,
     ChartKind,
     Intent,
@@ -43,21 +44,28 @@ PLANNER_SYSTEM_PROMPT = (
     "Respond with one JSON object and nothing else — no prose, no markdown.\n\n"
     "Schema:\n"
     "{\n"
-    '  "intent": "data_quality" | "metrics" | "chart" | "report" | "clarify" | "out_of_scope",\n'
+    '  "intent": "data_quality" | "profile" | "metrics" | "chart" | "report" | "clarify" | "out_of_scope",\n'
     '  "dataset_refs": ["DEMO_A", "DEMO_B", ...],   // empty means "all in session"\n'
     '  "date_range": {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} | null,\n'
     '  "metrics": ["period_return", "annualized_volatility", "max_drawdown"],\n'
     '  "charts": ["normalized_prices", "drawdown"],\n'
+    '  "extras": ["describe_price_series", "risk", "anomalies", "rolling"],\n'
     '  "clarifying_question": string | null,   // only when intent=clarify\n'
     '  "user_visible_summary": string          // 1-2 sentence agent message\n'
     "}\n\n"
     "Intent rules:\n"
     "- data_quality: user only asks about quality / inspection / sanity\n"
+    "- profile: user asks for dataset/table/CSV overview, columns, shape, or profile\n"
     "- metrics: user wants computed numbers; omit charts unless asked\n"
     "- chart: user asks to draw/plot/show a trend chart without needing metric numbers\n"
     "- report: user explicitly asks for a full report\n"
     "- clarify: request is missing essential info; ask ONE short question in clarifying_question\n"
     "- out_of_scope: request is unrelated to CSV price analysis\n"
+    "Extras rules:\n"
+    "- describe_price_series: attach to metrics when user asks what the trend/performance looks like\n"
+    "- risk: attach to metrics when user asks about risk, Sharpe, Sortino, Calmar, VaR, or CVaR\n"
+    "- anomalies: attach to data_quality when user asks about anomalies, outliers, jumps, or gaps\n"
+    "- rolling: attach to chart when user asks for rolling/window/moving metrics\n"
     "If you do not know the user's intent, prefer clarify."
 )
 
@@ -119,6 +127,65 @@ _REPORT_PATTERNS = (
     r"做一个.{0,30}报告",
 )
 
+
+_ANOMALY_PATTERNS = (
+    r"异常",
+    r"跳变",
+    r"缺口",
+    r"疑似.{0,4}错",
+    r"anomal",
+    r"outlier",
+    r"gap",
+)
+
+_RISK_PATTERNS = (
+    r"风险",
+    r"稳不稳",
+    r"夏普",
+    r"VaR",
+    r"CVaR",
+    r"回撤风险",
+    r"risk",
+    r"sharpe",
+    r"sortino",
+    r"calmar",
+)
+
+_ROLLING_PATTERNS = (
+    r"滚动",
+    r"窗口",
+    r"60.{0,4}日",
+    r"20.{0,4}日",
+    r"252.{0,4}日",
+    r"rolling",
+    r"window",
+    r"moving",
+)
+
+
+_PROFILE_PATTERNS = (
+    r"概况",
+    r"画像",
+    r"这张表",
+    r"看一下.{0,8}表",
+    r"字段",
+    r"列名",
+    r"profile",
+    r"describe dataset",
+    r"what.{0,8}csv.{0,8}look",
+)
+
+_DESCRIBE_PATTERNS = (
+    r"走势特点",
+    r"表现",
+    r"走势",
+    r"发生了什么",
+    r"describe",
+    r"summarize trend",
+    r"what.{0,8}trend",
+    r"how.{0,8}did.{0,8}perform",
+)
+
 _METRIC_PATTERNS = (
     r"指标",
     r"metrics?",
@@ -133,13 +200,11 @@ _METRIC_PATTERNS = (
 )
 
 _COMPARE_ONLY_PATTERNS = (
-    r"走势",
-    r"趋势",
     r"对比一下",
-    r"看一下.{0,8}走势",
-    r"画一下",
+    r"画一下.{0,8}图",
     r"compare.{0,8}trend",
     r"compare.{0,8}chart",
+    r"compare.{0,8}graph",
 )
 
 _CHART_PATTERNS = (
@@ -148,12 +213,16 @@ _CHART_PATTERNS = (
     r"趋势图",
     r"走势图",
     r"画图",
+    r"画一下",
+    r"画.{0,4}走势",
     r"作图",
     r"生成.{0,8}图",
     r"plot",
     r"chart",
     r"graph",
-    r"trend",
+    r"trend chart",
+    r"make.{0,4}chart",
+    r"draw.{0,4}chart",
 )
 
 _CLARIFY_TRIGGERS = (
@@ -204,16 +273,35 @@ def _extract_metrics(text: str) -> tuple[MetricName, ...]:
 
 
 def _extract_chart_kinds(text: str) -> tuple[ChartKind, ...]:
+    """Return chart kinds requested by the user.
+
+    Conservative: only emit ``DRAWDOWN`` / ``NORMALIZED_PRICES`` when
+    an explicit chart keyword is also present, otherwise a metric
+    phrase like "最大回撤" would steal chart kinds from a metrics
+    request. ``rolling.*`` kinds are added later by the chart branch.
+    """
     found: list[ChartKind] = []
     seen: set[ChartKind] = set()
     lowered = text.lower()
-    if "归一化" in lowered or "normalized" in lowered:
-        found.append(ChartKind.NORMALIZED_PRICES)
-        seen.add(ChartKind.NORMALIZED_PRICES)
-    if "回撤" in lowered or "drawdown" in lowered:
-        if ChartKind.DRAWDOWN not in seen:
-            found.append(ChartKind.DRAWDOWN)
-            seen.add(ChartKind.DRAWDOWN)
+    has_chart_keyword = _match_any(
+        lowered,
+        (
+            r"图",
+            r"chart",
+            r"plot",
+            r"graph",
+            r"走势",
+            r"趋势",
+        ),
+    )
+    if has_chart_keyword:
+        if "归一化" in lowered or "normalized" in lowered:
+            found.append(ChartKind.NORMALIZED_PRICES)
+            seen.add(ChartKind.NORMALIZED_PRICES)
+        if "回撤" in lowered or "drawdown" in lowered:
+            if ChartKind.DRAWDOWN not in seen:
+                found.append(ChartKind.DRAWDOWN)
+                seen.add(ChartKind.DRAWDOWN)
     return tuple(found)
 
 
@@ -249,9 +337,7 @@ class RulePlanner:
         if not is_supported_analysis_request(text):
             return AnalysisPlan(
                 intent=Intent.OUT_OF_SCOPE,
-                user_visible_summary=(
-                    "Out of scope. This agent only handles historical CSV price analysis."
-                ),
+                user_visible_summary=("超出范围：我目前只处理已上传 CSV 的历史价格数据分析。"),
             )
 
         available = context.dataset_summaries
@@ -264,30 +350,32 @@ class RulePlanner:
             or _match_any(text, _COMPARE_ONLY_PATTERNS)
             or _match_any(text, _CHART_PATTERNS)
         )
-        has_number_metric_signal = bool(metrics) or _match_any(
-            text,
-            (
-                r"指标",
-                r"metrics?",
-                r"收益",
-                r"return",
-                r"波动",
-                r"volatility",
-            ),
-        )
 
-        # Decide intent by precedence. data_quality wins over the
-        # "which dataset?" clarification when the user has signalled it
-        # explicitly — the request is unambiguous about *what* to do.
+        # Decide intent by precedence. profile/data_quality win over
+        # the "which dataset?" clarification when the user has signalled
+        # it explicitly — the request is unambiguous about *what* to do.
 
-        if _match_any(text, _DATA_QUALITY_PATTERNS) and not metrics and not chart_kinds:
+        if _match_any(text, _PROFILE_PATTERNS):
             return AnalysisPlan(
-                intent=Intent.DATA_QUALITY,
+                intent=Intent.PROFILE,
                 dataset_refs=dataset_refs,
-                user_visible_summary=(
-                    "I'll check the quality of the imported datasets without running any metrics."
-                ),
+                user_visible_summary=("我会生成数据表概况和质量摘要。"),
             )
+
+        if _match_any(text, _DATA_QUALITY_PATTERNS) or _match_any(text, _ANOMALY_PATTERNS):
+            if metrics or chart_kinds:
+                # User wants metrics/charts AND quality — fall through.
+                pass
+            else:
+                extras: tuple[AnalysisExtra, ...] = ()
+                if _match_any(text, _ANOMALY_PATTERNS):
+                    extras = (AnalysisExtra.ANOMALIES,)
+                return AnalysisPlan(
+                    intent=Intent.DATA_QUALITY,
+                    dataset_refs=dataset_refs,
+                    extras=extras,
+                    user_visible_summary=("我会检查已导入数据的质量，并提示疑似异常。"),
+                )
 
         # If the request has no dataset in scope AND no metrics/charts
         # have been signalled, ask which dataset(s).
@@ -300,10 +388,9 @@ class RulePlanner:
             return AnalysisPlan(
                 intent=Intent.CLARIFY,
                 clarifying_question=(
-                    "Which datasets should I analyze? "
-                    f"Available: {', '.join(s['asset_id'] for s in available)}."
+                    f"你想分析哪些数据集？当前可选：{', '.join(s['asset_id'] for s in available)}。"
                 ),
-                user_visible_summary=("I can analyze any combination of the imported datasets."),
+                user_visible_summary=("我可以分析当前已导入的任意数据集组合。"),
             )
 
         # Bare "分析一下" / "看一下" with no target → ask for clarification.
@@ -311,11 +398,9 @@ class RulePlanner:
             return AnalysisPlan(
                 intent=Intent.CLARIFY,
                 clarifying_question=(
-                    "What would you like me to analyze? "
-                    "Please specify the metric (period return, max drawdown, "
-                    "annualized volatility) and the date range."
+                    "你想分析什么内容？请说明指标（区间收益、最大回撤、年化波动率等）和日期范围。"
                 ),
-                user_visible_summary="I need more detail before I can analyze.",
+                user_visible_summary="我需要更多信息才能继续分析。",
             )
 
         if _match_any(text, _REPORT_PATTERNS):
@@ -334,23 +419,50 @@ class RulePlanner:
                     ChartKind.NORMALIZED_PRICES,
                     ChartKind.DRAWDOWN,
                 ),
-                user_visible_summary=(
-                    "I'll prepare a full Markdown report with metrics and charts."
-                ),
+                user_visible_summary=("我会生成包含指标和图表的完整报告。"),
             )
 
-        if has_chart_signal and not has_number_metric_signal:
+        # "走势怎么样" / "what's the trend" → describe (metrics + extra).
+        # Fires only when no explicit chart keyword (走势图 / 画图 / plot /
+        # chart) is present, otherwise the chart branch below wins.
+        if (
+            _match_any(text, _DESCRIBE_PATTERNS)
+            and not _match_any(text, _CHART_PATTERNS)
+            and not metrics
+        ):
             date_range = self._maybe_date_payload(text)
+            return AnalysisPlan(
+                intent=Intent.METRICS,
+                dataset_refs=dataset_refs,
+                date_range=date_range,
+                metrics=(MetricName.PERIOD_RETURN, MetricName.MAX_DRAWDOWN),
+                extras=(AnalysisExtra.DESCRIBE_PRICE_SERIES,),
+                user_visible_summary=("我会概括这个区间内的价格走势。"),
+            )
+
+        if has_chart_signal or _match_any(text, _ROLLING_PATTERNS):
+            date_range = self._maybe_date_payload(text)
+            extras = ()
+            if _match_any(text, _ROLLING_PATTERNS):
+                extras = (AnalysisExtra.ROLLING,)
+            charts = chart_kinds or (ChartKind.NORMALIZED_PRICES,)
             return AnalysisPlan(
                 intent=Intent.CHART,
                 dataset_refs=dataset_refs,
                 date_range=date_range,
-                charts=chart_kinds or (ChartKind.NORMALIZED_PRICES,),
-                user_visible_summary=("I'll create the requested trend chart."),
+                charts=charts,
+                extras=extras,
+                user_visible_summary=("我会生成你需要的趋势图表。"),
             )
 
-        if has_metric_signal or has_chart_signal:
+        if has_metric_signal or has_chart_signal or _match_any(text, _RISK_PATTERNS):
             date_range = self._maybe_date_payload(text)
+            extras_list: list[AnalysisExtra] = []
+            if _match_any(text, _DESCRIBE_PATTERNS):
+                extras_list.append(AnalysisExtra.DESCRIBE_PRICE_SERIES)
+            if _match_any(text, _RISK_PATTERNS):
+                extras_list.append(AnalysisExtra.RISK)
+            extras = tuple(extras_list)
             return AnalysisPlan(
                 intent=Intent.METRICS,
                 dataset_refs=dataset_refs,
@@ -360,17 +472,15 @@ class RulePlanner:
                     MetricName.PERIOD_RETURN,
                     MetricName.MAX_DRAWDOWN,
                 ),
-                user_visible_summary=("I'll compute the requested metrics over the date range."),
+                extras=extras,
+                user_visible_summary=("我会计算这个区间内的相关指标。"),
             )
 
         # Fallback: ask for clarification.
         return AnalysisPlan(
             intent=Intent.CLARIFY,
-            clarifying_question=(
-                "I could not determine the analysis intent. "
-                "Could you specify the dataset(s), date range, and metrics?"
-            ),
-            user_visible_summary="I need more detail to choose the right analysis path.",
+            clarifying_question=("我还不能确定分析意图。请说明要分析的数据集、日期范围和指标。"),
+            user_visible_summary="我需要更多信息来选择合适的分析路径。",
         )
 
     @staticmethod
@@ -459,6 +569,7 @@ class LLMPlanner:
             date_range=date_range,
             metrics=tuple(MetricName(m) for m in payload.get("metrics") or ()),
             charts=tuple(ChartKind(c) for c in payload.get("charts") or ()),
+            extras=tuple(AnalysisExtra(e) for e in payload.get("extras") or ()),
             clarifying_question=payload.get("clarifying_question"),
             user_visible_summary=payload.get("user_visible_summary") or "",
         )

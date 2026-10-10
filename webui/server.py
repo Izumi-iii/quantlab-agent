@@ -53,6 +53,7 @@ from quantlab_agent.domain.models import (
     PriceBasis,
     RunMode,
 )
+from webui.summary_presenters import summarize_run as _summarize_run_presenter
 
 log = logging.getLogger("quantlab_agent.webui")
 
@@ -241,6 +242,7 @@ def _serialize_run(run, records: tuple[Any, ...] = ()) -> dict[str, Any]:
         "failure": run.failure,
         "intent": intent,
         "plan_summary": snapshot.get("plan_summary"),
+        "extras": list(snapshot.get("extras") or []),
         "summary": rich_summary or user_visible_summary or _derive_summary(run),
         "counters": {
             "tool_executions_used": run.counters.tool_executions_used,
@@ -255,6 +257,9 @@ def _serialize_run(run, records: tuple[Any, ...] = ()) -> dict[str, Any]:
 
 
 def _derive_rich_summary(run, records: tuple[Any, ...], intent: str | None) -> str | None:
+    presenter_text = _summarize_run_presenter(run, records)
+    if presenter_text is not None:
+        return presenter_text
     if intent == "data_quality":
         return _summarize_data_quality(records)
     if intent == "metrics":
@@ -400,11 +405,13 @@ def _derive_summary(run) -> str | None:
         details = run.failure.get("details") or {}
         question = details.get("clarifying_question") or run.failure.get("message")
         if question:
-            return f"需要更多信息: {question}"
+            return f"需要更多信息：{question}"
     if run.status.value == "failed" and run.failure:
+        if run.failure.get("code") == "OUT_OF_SCOPE":
+            return "超出范围：我目前只处理已上传 CSV 的历史价格数据分析。"
         msg = run.failure.get("message")
         if msg:
-            return f"分析失败: {msg}"
+            return f"分析失败：{msg}"
     if run.status.value == "succeeded":
         return "已完成分析。点击此处查看报告。"
     return None

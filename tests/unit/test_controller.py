@@ -145,6 +145,8 @@ def test_scope_gate_accepts_chinese_analysis_and_rejects_unrelated_requests() ->
     assert is_supported_analysis_request(
         "请比较 DEMO_A 和 DEMO_B 在 2024-01 的区间收益和最大回撤，并生成报告"
     )
+    assert is_supported_analysis_request("风险怎么样？")
+    assert is_supported_analysis_request("计算夏普、VaR 和 CVaR")
     assert not is_supported_analysis_request("帮我查一下明天上海天气")
 
 

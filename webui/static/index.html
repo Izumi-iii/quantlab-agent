@@ -165,14 +165,14 @@
       font: inherit; width: 248px; text-align: left;
     }
     .timeline {
-      position: relative; margin: 22px 0 0 8px;
-      padding-left: 24px;
+      position: relative; margin: 14px 0 0 8px;
+      padding-left: 20px;
       border-left: 2px solid #2f97e8;
     }
     .step {
       position: relative;
-      margin-bottom: 20px;
-      max-width: 560px;
+      margin-bottom: 14px;
+      max-width: 700px;
     }
     .step::before {
       content: ""; position: absolute; left: -31px; top: 12px;
@@ -187,9 +187,9 @@
       border: 1px solid var(--line);
       border-radius: 8px;
       background: rgba(255, 255, 255, 0.92);
-      padding: 10px 12px;
-      line-height: 1.58;
-      font-size: 14px;
+      padding: 8px 11px;
+      line-height: 1.48;
+      font-size: 13px;
       box-shadow: 0 8px 18px rgba(15, 23, 42, 0.04);
     }
     .bubble.selected { border-color: var(--accent); background: #eef7ff; box-shadow: 0 0 0 1px var(--accent); }
@@ -213,14 +213,14 @@
     }
     .intent-tag {
       display: inline-block;
-      font-size: 11px;
+      font-size: 10px;
       letter-spacing: 0.06em;
       text-transform: uppercase;
       background: var(--accent);
       color: white;
       padding: 2px 8px;
       border-radius: 10px;
-      margin-right: 8px;
+      margin-right: 7px;
       vertical-align: middle;
     }
     .intent-tag.intent-clarify,
@@ -233,14 +233,14 @@
       white-space: pre-line;
     }
     .tool-details {
-      margin-bottom: 20px;
-      max-width: 560px;
+      margin-bottom: 14px;
+      max-width: 700px;
     }
     .tool-details summary {
       cursor: pointer;
       color: var(--muted);
-      font-size: 14px;
-      margin-bottom: 14px;
+      font-size: 13px;
+      margin-bottom: 10px;
       user-select: none;
     }
     .tool-details summary:hover { color: var(--accent); }
@@ -258,7 +258,7 @@
     }
     .thumb-chart img { width: 100%; height: 100%; object-fit: contain; border-radius: 6px; }
     .tool-note {
-      margin-top: 8px; color: var(--muted); font-size: 13px;
+      margin-top: 6px; color: var(--muted); font-size: 12px;
     }
     .explain-box {
       border: 1px solid #8dc5f4; background: #f0f8ff;
@@ -848,6 +848,18 @@
       return `<span class="status-pill ${status}">${status}</span>`;
     }
 
+    function intentLabel(intent) {
+      return ({
+        profile: "概况",
+        metrics: "指标",
+        data_quality: "质量",
+        chart: "图表",
+        report: "报告",
+        clarify: "追问",
+        out_of_scope: "越界",
+      })[intent] || intent;
+    }
+
     function sleep(ms) {
       return new Promise((resolve) => setTimeout(resolve, ms));
     }
@@ -935,7 +947,7 @@
           : "");
       if (plannerSummary) {
         const intentTag = run.intent
-          ? `<span class="intent-tag intent-${escapeHtml(run.intent)}">${escapeHtml(run.intent)}</span>`
+          ? `<span class="intent-tag intent-${escapeHtml(run.intent)}">${escapeHtml(intentLabel(run.intent))}</span>`
           : "";
         const cls = runStatus === "succeeded" ? "selected" : (runStatus === "failed" ? "tool-failed" : "");
         const view = run.report_id
@@ -1173,7 +1185,7 @@
 
     document.querySelector("#sendBtn").addEventListener("click", sendMessage);
     document.querySelector("#composerInput").addEventListener("keydown", (ev) => {
-      if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) {
+      if (ev.key === "Enter" && !ev.shiftKey) {
         ev.preventDefault();
         sendMessage();
       }

@@ -13,7 +13,7 @@ from quantlab_agent.agent.planner import (
     PlannerError,
     RulePlanner,
 )
-from quantlab_agent.domain.models import ChartKind, Intent, MetricName
+from quantlab_agent.domain.models import AnalysisExtra, ChartKind, Intent, MetricName
 from quantlab_agent.ports.model_provider import ModelTurn
 
 
@@ -82,10 +82,27 @@ def test_rule_planner_picks_default_metrics_when_keyword_present() -> None:
     assert MetricName.PERIOD_RETURN in plan.metrics
 
 
-def test_rule_planner_compare_trend_uses_chart_for_all_datasets() -> None:
+def test_rule_planner_risk_questions_are_in_scope() -> None:
+    plan = RulePlanner().plan("风险怎么样？", _ctx("DEMO_A"))
+    assert plan.intent is Intent.METRICS
+    assert AnalysisExtra.RISK in plan.extras
+
+    plan = RulePlanner().plan("计算夏普、VaR 和 CVaR", _ctx("DEMO_A"))
+    assert plan.intent is Intent.METRICS
+    assert AnalysisExtra.RISK in plan.extras
+
+
+def test_rule_planner_compare_trend_describes_for_all_datasets() -> None:
     plan = RulePlanner().plan("比较两个资产的走势", _ctx("DEMO_A", "DEMO_B"))
-    assert plan.intent is Intent.CHART
+    # "走势" alone is describe (M7): METRICS intent with describe extra.
+    assert plan.intent is Intent.METRICS
     assert plan.dataset_refs == ()
+    assert "describe_price_series" in [e.value for e in plan.extras]
+
+
+def test_rule_planner_chart_keyword_overrides_describe() -> None:
+    plan = RulePlanner().plan("画一下 DEMO_A 和 DEMO_B 的走势图", _ctx("DEMO_A", "DEMO_B"))
+    assert plan.intent is Intent.CHART
     assert plan.charts == (ChartKind.NORMALIZED_PRICES,)
 
 
@@ -96,6 +113,13 @@ def test_rule_planner_trend_chart_uses_chart_intent() -> None:
     assert plan.charts == (ChartKind.NORMALIZED_PRICES,)
 
 
+def test_rule_planner_rolling_chart_does_not_emit_unsupported_chart_kinds() -> None:
+    plan = RulePlanner().plan("生成 60 日滚动波动率图", _ctx("DEMO_A"))
+    assert plan.intent is Intent.CHART
+    assert AnalysisExtra.ROLLING in plan.extras
+    assert plan.charts == (ChartKind.NORMALIZED_PRICES,)
+
+
 def test_llm_planner_parses_valid_json() -> None:
     payload = {
         "intent": "metrics",
@@ -103,6 +127,7 @@ def test_llm_planner_parses_valid_json() -> None:
         "date_range": {"start": "2024-01-02", "end": "2024-01-15"},
         "metrics": ["max_drawdown"],
         "charts": [],
+        "extras": ["risk"],
         "clarifying_question": None,
         "user_visible_summary": "ok",
     }
@@ -114,6 +139,7 @@ def test_llm_planner_parses_valid_json() -> None:
     plan = planner.plan("anything", _ctx("DEMO_A"))
     assert plan.intent is Intent.METRICS
     assert plan.metrics == (MetricName.MAX_DRAWDOWN,)
+    assert plan.extras == (AnalysisExtra.RISK,)
 
 
 def test_llm_planner_strips_code_fence() -> None:

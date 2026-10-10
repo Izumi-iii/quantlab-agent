@@ -99,6 +99,27 @@ class BuildReportInput(_StrictModel):
     chart_ids: tuple[str, ...] = ()
 
 
+class DetectAnomaliesInput(_StrictModel):
+    analysis_id: str = Field(min_length=36, max_length=36)
+
+
+class ComputeRiskMetricsInput(_StrictModel):
+    analysis_id: str = Field(min_length=36, max_length=36)
+
+
+class ComputeRollingMetricsInput(_StrictModel):
+    analysis_id: str = Field(min_length=36, max_length=36)
+    windows: tuple[int, ...] = Field(default=(20, 60, 252))
+
+
+class ProfileDatasetInput(_StrictModel):
+    dataset_id: str = Field(min_length=36, max_length=36)
+
+
+class DescribePriceSeriesInput(_StrictModel):
+    analysis_id: str = Field(min_length=36, max_length=36)
+
+
 # ---------------------------------------------------------------------------
 # Envelope helpers
 # ---------------------------------------------------------------------------
@@ -387,6 +408,137 @@ def make_create_charts_handler(
                 for a in artifacts
             ],
         }
+
+    return handle
+
+
+def make_profile_dataset_handler(*, dataset_service: DatasetService) -> ToolHandler:
+    from quantlab_agent.application.profiling import ProfilingService
+
+    profiler = ProfilingService()
+
+    def handle(ctx: ToolContext, args: BaseModel) -> dict[str, Any]:
+        assert isinstance(args, ProfileDatasetInput)
+        snapshot = ctx.dataset_store.get(args.dataset_id, ctx.session_id)
+        profile = profiler.profile(snapshot)
+        return profile.model_dump(mode="json")
+
+    return handle
+
+
+def make_describe_price_series_handler(
+    *,
+    analysis_service: AnalysisService,
+    run_service: RunService,
+) -> ToolHandler:
+    from datetime import date as _date
+
+    from quantlab_agent.application.descriptive import DescriptiveService
+
+    describer = DescriptiveService()
+
+    def handle(ctx: ToolContext, args: BaseModel) -> dict[str, Any]:
+        assert isinstance(args, DescribePriceSeriesInput)
+        run_service.assert_analysis_owned(ctx.run_id, ctx.session_id, args.analysis_id)
+
+        run = run_service.get_run(ctx.run_id, ctx.session_id)
+        datasets = [
+            ctx.dataset_store.get(dataset_id, ctx.session_id) for dataset_id in run.dataset_ids
+        ]
+        requested_metrics = tuple(MetricName(m) for m in run.context_snapshot["requested_metrics"])
+        prepared = analysis_service.prepare(
+            datasets,
+            session_id=ctx.session_id,
+            requested_start=_date.fromisoformat(run.context_snapshot["requested_start"]),
+            requested_end=_date.fromisoformat(run.context_snapshot["requested_end"]),
+            requested_metrics=requested_metrics,
+            analysis_id=run.analysis_id,
+        )
+        summary = describer.describe(prepared)
+        return summary.model_dump(mode="json")
+
+    return handle
+
+
+def _load_prepared_analysis(
+    ctx: ToolContext, run_service: RunService, analysis_service: AnalysisService, args
+):
+    """Helper: rebuild ``PreparedAnalysis`` from the run's context snapshot.
+
+    Tools that operate on a previously-prepared analysis (describe,
+    detect_anomalies, compute_risk_metrics, compute_rolling_metrics)
+    all need the same: load datasets, parse dates/metrics from the
+    snapshot, call ``analysis_service.prepare`` with the saved
+    ``analysis_id`` so the snapshot stays self-consistent.
+    """
+    from datetime import date as _date
+
+    run = run_service.get_run(ctx.run_id, ctx.session_id)
+    datasets = [ctx.dataset_store.get(dataset_id, ctx.session_id) for dataset_id in run.dataset_ids]
+    requested_metrics = tuple(MetricName(m) for m in run.context_snapshot["requested_metrics"])
+    return analysis_service.prepare(
+        datasets,
+        session_id=ctx.session_id,
+        requested_start=_date.fromisoformat(run.context_snapshot["requested_start"]),
+        requested_end=_date.fromisoformat(run.context_snapshot["requested_end"]),
+        requested_metrics=requested_metrics,
+        analysis_id=run.analysis_id,
+    )
+
+
+def make_detect_anomalies_handler(
+    *,
+    analysis_service: AnalysisService,
+    run_service: RunService,
+) -> ToolHandler:
+    from quantlab_agent.application.diagnostics import AnomalyDetectionService
+
+    detector = AnomalyDetectionService()
+
+    def handle(ctx: ToolContext, args: BaseModel) -> dict[str, Any]:
+        assert isinstance(args, DetectAnomaliesInput)
+        run_service.assert_analysis_owned(ctx.run_id, ctx.session_id, args.analysis_id)
+        prepared = _load_prepared_analysis(ctx, run_service, analysis_service, args)
+        report = detector.detect(prepared)
+        return report.model_dump(mode="json")
+
+    return handle
+
+
+def make_compute_risk_metrics_handler(
+    *,
+    analysis_service: AnalysisService,
+    run_service: RunService,
+) -> ToolHandler:
+    from quantlab_agent.application.risk import RiskAnalysisService
+
+    analyzer = RiskAnalysisService()
+
+    def handle(ctx: ToolContext, args: BaseModel) -> dict[str, Any]:
+        assert isinstance(args, ComputeRiskMetricsInput)
+        run_service.assert_analysis_owned(ctx.run_id, ctx.session_id, args.analysis_id)
+        prepared = _load_prepared_analysis(ctx, run_service, analysis_service, args)
+        result = analyzer.analyze(prepared)
+        return result.model_dump(mode="json")
+
+    return handle
+
+
+def make_compute_rolling_metrics_handler(
+    *,
+    analysis_service: AnalysisService,
+    run_service: RunService,
+) -> ToolHandler:
+    from quantlab_agent.application.rolling import RollingMetricsService
+
+    computer = RollingMetricsService()
+
+    def handle(ctx: ToolContext, args: BaseModel) -> dict[str, Any]:
+        assert isinstance(args, ComputeRollingMetricsInput)
+        run_service.assert_analysis_owned(ctx.run_id, ctx.session_id, args.analysis_id)
+        prepared = _load_prepared_analysis(ctx, run_service, analysis_service, args)
+        report = computer.compute(prepared, windows=tuple(args.windows))
+        return report.model_dump(mode="json")
 
     return handle
 
@@ -756,6 +908,20 @@ def default_registry(
     )
     registry.register(
         ToolDefinition(
+            name="profile_dataset",
+            description=(
+                "Return a column-by-column profile of a dataset "
+                "(row count, date range, price range, mean/stddev, "
+                "and a top-of-list of quality issues). Use this when the "
+                "user asks 'what does this CSV look like?'."
+            ),
+            input_model=ProfileDatasetInput,
+            output_description="dataset_id, asset_id, columns, quality_summary",
+            handler=make_profile_dataset_handler(dataset_service=dataset_service),
+        )
+    )
+    registry.register(
+        ToolDefinition(
             name="prepare_analysis",
             description=(
                 "Slice datasets into the requested date range, align common "
@@ -780,6 +946,25 @@ def default_registry(
             input_model=ComputeMetricsInput,
             output_description="metrics_id and per-asset metric values",
             handler=make_compute_metrics_handler(
+                analysis_service=analysis_service,
+                run_service=run_service,
+            ),
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="describe_price_series",
+            description=(
+                "Produce a human-readable summary of one or two asset "
+                "price series over the prepared analysis window: "
+                "start/end/min/max price, total return, up/down/flat "
+                "days, longest up/down streak, max daily gain/loss with "
+                "dates. Use this when the user asks 'what does the "
+                "trend look like?'."
+            ),
+            input_model=DescribePriceSeriesInput,
+            output_description="analysis_id, effective range, per-asset descriptive stats",
+            handler=make_describe_price_series_handler(
                 analysis_service=analysis_service,
                 run_service=run_service,
             ),
@@ -819,6 +1004,55 @@ def default_registry(
             ),
         )
     )
+    registry.register(
+        ToolDefinition(
+            name="detect_anomalies",
+            description=(
+                "Identify anomalous observations on the prepared price "
+                "series: extreme single-day returns (MAD-based and "
+                "absolute thresholds) and large calendar-day gaps."
+            ),
+            input_model=DetectAnomaliesInput,
+            output_description="analysis_id, parameters, per-asset anomaly items",
+            handler=make_detect_anomalies_handler(
+                analysis_service=analysis_service,
+                run_service=run_service,
+            ),
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="compute_risk_metrics",
+            description=(
+                "Compute risk indicators over the prepared analysis: "
+                "Sharpe, Sortino, Calmar, VaR 95%, CVaR 95%, mean / std "
+                "daily return, annualized return. Does NOT include "
+                "max_drawdown (owned by compute_metrics)."
+            ),
+            input_model=ComputeRiskMetricsInput,
+            output_description="analysis_id, per-asset risk values + unavailable reasons",
+            handler=make_compute_risk_metrics_handler(
+                analysis_service=analysis_service,
+                run_service=run_service,
+            ),
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="compute_rolling_metrics",
+            description=(
+                "Compute rolling return / volatility / drawdown / Sharpe "
+                "over the prepared analysis with default windows "
+                "[20, 60, 252]. Caller may pass a subset of windows."
+            ),
+            input_model=ComputeRollingMetricsInput,
+            output_description="analysis_id, windows, per-asset rolling series",
+            handler=make_compute_rolling_metrics_handler(
+                analysis_service=analysis_service,
+                run_service=run_service,
+            ),
+        )
+    )
     return registry
 
 
@@ -832,4 +1066,9 @@ __all__ = [
     "ComputeMetricsInput",
     "CreateChartsInput",
     "BuildReportInput",
+    "ProfileDatasetInput",
+    "DescribePriceSeriesInput",
+    "DetectAnomaliesInput",
+    "ComputeRiskMetricsInput",
+    "ComputeRollingMetricsInput",
 ]

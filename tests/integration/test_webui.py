@@ -286,9 +286,15 @@ def test_message_trend_chart_creates_chart_only_run(server: _ServerThread) -> No
     assert run["intent"] == "chart"
     assert run["status"] == "succeeded"
     assert run["chart_ids"]
+    assert run["report_id"] is None
     assert "图表已生成" in run["summary"]
     tool_names = [tc["tool_name"] for tc in payload["tool_calls"]]
-    assert tool_names == ["inspect_dataset", "prepare_analysis", "create_charts"]
+    assert tool_names == [
+        "inspect_dataset",
+        "prepare_analysis",
+        "compute_metrics",
+        "create_charts",
+    ]
 
 
 def test_chart_png_served(server: _ServerThread) -> None:
@@ -498,3 +504,123 @@ def test_planner_response_carries_summary_and_intent(server: _ServerThread) -> N
     assert payload["run"]["intent"] == "data_quality"
     assert payload["run"]["summary"]  # non-empty string
     assert payload["run"]["plan_summary"]  # non-empty string
+
+
+def test_planner_profile_intent_runs_inspect_and_profile(server: _ServerThread) -> None:
+    _seed_one(server)
+    status, body, _ = _http_post_json(
+        f"{server.url}/api/sessions/{SESSION}/messages",
+        {"text": "看看 DEMO_A 的概况"},
+    )
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["run"]["intent"] == "profile"
+    tool_names = [tc["tool_name"] for tc in payload["tool_calls"]]
+    assert tool_names == ["inspect_dataset", "profile_dataset"]
+    assert payload["run"]["status"] == "succeeded"
+    assert "DEMO_A" in payload["run"]["summary"]
+
+
+def test_planner_describe_intent_runs_describe_after_metrics(
+    server: _ServerThread,
+) -> None:
+    _seed_one(server)
+    status, body, _ = _http_post_json(
+        f"{server.url}/api/sessions/{SESSION}/messages",
+        {
+            "text": "DEMO_A 走势怎么样",
+            "start": "2024-01-02",
+            "end": "2024-01-15",
+        },
+    )
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["run"]["intent"] == "metrics"
+    tool_names = [tc["tool_name"] for tc in payload["tool_calls"]]
+    assert tool_names == [
+        "inspect_dataset",
+        "prepare_analysis",
+        "compute_metrics",
+        "describe_price_series",
+    ]
+    assert payload["run"]["extras"] == ["describe_price_series"]
+    assert "DEMO_A" in payload["run"]["summary"]
+
+
+def test_planner_chart_intent_runs_create_charts_only(server: _ServerThread) -> None:
+    _seed_one(server)
+    status, body, _ = _http_post_json(
+        f"{server.url}/api/sessions/{SESSION}/messages",
+        {
+            "text": "画一下 DEMO_A 的走势图",
+            "start": "2024-01-02",
+            "end": "2024-01-15",
+        },
+    )
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["run"]["intent"] == "chart"
+    tool_names = [tc["tool_name"] for tc in payload["tool_calls"]]
+    assert tool_names == [
+        "inspect_dataset",
+        "prepare_analysis",
+        "compute_metrics",
+        "create_charts",
+    ]
+    assert payload["run"]["report_id"] is None
+    assert len(payload["run"]["chart_ids"]) >= 1
+
+
+def test_planner_anomaly_extra_runs_detect_anomalies(server: _ServerThread) -> None:
+    _seed_one(server)
+    status, body, _ = _http_post_json(
+        f"{server.url}/api/sessions/{SESSION}/messages",
+        {"text": "DEMO_A 有没有异常"},
+    )
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["run"]["intent"] == "data_quality"
+    assert payload["run"]["extras"] == ["anomalies"]
+    tool_names = [tc["tool_name"] for tc in payload["tool_calls"]]
+    assert "detect_anomalies" in tool_names
+
+
+def test_planner_risk_extra_runs_compute_risk_metrics(server: _ServerThread) -> None:
+    _seed_one(server)
+    status, body, _ = _http_post_json(
+        f"{server.url}/api/sessions/{SESSION}/messages",
+        {
+            "text": "DEMO_A 风险怎么样 2024-01-02 2024-01-15",
+            "start": "2024-01-02",
+            "end": "2024-01-15",
+        },
+    )
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["run"]["intent"] == "metrics"
+    assert payload["run"]["extras"] == ["risk"]
+    tool_names = [tc["tool_name"] for tc in payload["tool_calls"]]
+    assert "compute_risk_metrics" in tool_names
+
+
+def test_planner_rolling_extra_runs_compute_rolling_metrics(
+    server: _ServerThread,
+) -> None:
+    _seed_one(server)
+    status, body, _ = _http_post_json(
+        f"{server.url}/api/sessions/{SESSION}/messages",
+        {
+            "text": "60 日波动率图 2024-01-02 2024-01-15",
+            "start": "2024-01-02",
+            "end": "2024-01-15",
+        },
+    )
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["run"]["intent"] == "chart"
+    assert payload["run"]["status"] == "succeeded"
+    assert payload["run"]["extras"] == ["rolling"]
+    tool_names = [tc["tool_name"] for tc in payload["tool_calls"]]
+    assert "compute_rolling_metrics" in tool_names
+    assert "create_charts" in tool_names
+    assert all(tc["status"] == "succeeded" for tc in payload["tool_calls"])

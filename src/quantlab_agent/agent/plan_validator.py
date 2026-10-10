@@ -75,9 +75,7 @@ class PlanValidator:
         session_id: str,
     ) -> ResolvedPlan | ClarificationRequest | OutOfScopeError:
         if plan.intent is Intent.OUT_OF_SCOPE:
-            return OutOfScopeError(
-                "Out of scope. This agent only handles historical CSV price analysis."
-            )
+            return OutOfScopeError("超出范围：我目前只处理已上传 CSV 的历史价格数据分析。")
 
         if plan.intent is Intent.CLARIFY:
             assert plan.clarifying_question is not None  # AnalysisPlan enforces it
@@ -110,6 +108,7 @@ class PlanValidator:
             effective_end=effective_end,
             metrics=plan.metrics,
             charts=plan.charts,
+            extras=plan.extras,
             clarifying_question=plan.clarifying_question,
             user_visible_summary=plan.user_visible_summary,
             plan_summary=summary,
@@ -200,14 +199,20 @@ class PlanValidator:
         resolved_ids: list[str],
         available: list[dict[str, Any]],
     ) -> str:
+        from quantlab_agent.domain.models import AnalysisExtra
+
         by_id = {item["dataset_id"]: item for item in available}
         asset_labels = [by_id[ds]["asset_id"] for ds in resolved_ids if ds in by_id]
         target = ", ".join(asset_labels) if asset_labels else "the imported datasets"
         if plan.intent is Intent.DATA_QUALITY:
             return f"Inspecting data quality for {target}."
+        if plan.intent is Intent.PROFILE:
+            return f"Profiling {target}."
         if plan.intent is Intent.METRICS:
-            metric_list = ", ".join(m.value for m in plan.metrics) or "default metrics"
-            return f"Computing {metric_list} for {target}."
+            base = f"Computing metrics for {target}."
+            if AnalysisExtra.DESCRIBE_PRICE_SERIES in plan.extras:
+                base += " Will also describe the price series."
+            return base
         if plan.intent is Intent.CHART:
             chart_list = ", ".join(c.value for c in plan.charts) or "default charts"
             return f"Creating {chart_list} for {target}."
