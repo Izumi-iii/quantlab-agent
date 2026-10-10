@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 
 from quantlab_agent.application.analyses import PreparedAnalysis
@@ -100,7 +101,7 @@ class RollingMetricsService:
             points.append(
                 RollingPoint(
                     date=ts_date.isoformat() if hasattr(ts_date, "isoformat") else str(ts_date),
-                    value=None if pd.isna(value) else float(value),
+                    value=None if pd.isna(value) or not math.isfinite(value) else float(value),
                 )
             )
         return RollingSeries(
@@ -112,21 +113,14 @@ class RollingMetricsService:
 
     @staticmethod
     def _rolling_drawdown(prices: pd.Series, window: int) -> pd.Series:
-        # Rolling-window max drawdown over the trailing ``window`` observations.
-        result: list[float] = []
-        values = prices.to_numpy(dtype=float)
-        for end in range(len(values)):
-            start = max(0, end - window + 1)
-            window_slice = values[start : end + 1]
-            peak = window_slice.max()
-            result.append(float(values[end] / peak - 1.0) if peak > 0 else 0.0)
-        return pd.Series(result, index=prices.index)
+        return prices.rolling(window, min_periods=window).apply(
+            lambda values: float((values / np.maximum.accumulate(values) - 1).min()), raw=True
+        )
 
-    @staticmethod
-    def _rolling_sharpe(returns: pd.Series, window: int) -> pd.Series:
+    def _rolling_sharpe(self, returns: pd.Series, window: int) -> pd.Series:
         rolling_mean = returns.rolling(window=window, min_periods=window).mean()
         rolling_std = returns.rolling(window=window, min_periods=window).std(ddof=1)
-        sharpe = rolling_mean / rolling_std * math.sqrt(DEFAULT_ANNUALIZATION_FACTOR)
+        sharpe = rolling_mean / rolling_std * math.sqrt(self.annualization_factor)
         return sharpe
 
 

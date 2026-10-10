@@ -147,6 +147,8 @@ def test_scope_gate_accepts_chinese_analysis_and_rejects_unrelated_requests() ->
     )
     assert is_supported_analysis_request("风险怎么样？")
     assert is_supported_analysis_request("计算夏普、VaR 和 CVaR")
+    assert is_supported_analysis_request("趋势图")
+    assert is_supported_analysis_request("生成趋势图，并检查有没有异常常值")
     assert not is_supported_analysis_request("帮我查一下明天上海天气")
 
 

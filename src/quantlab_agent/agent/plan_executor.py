@@ -100,6 +100,9 @@ class PlanExecutor:
             snapshot["execution_end"] = plan.effective_end.isoformat()
         metrics_for_execution = plan.metrics or self._default_metrics()
         snapshot["requested_metrics"] = [m.value for m in metrics_for_execution]
+        snapshot["answer_metrics"] = bool(plan.metrics) or plan.intent is Intent.METRICS
+        snapshot["rolling_windows"] = list(plan.rolling_windows)
+        snapshot["requested_charts"] = [kind.value for kind in plan.charts]
         if plan.extras:
             snapshot["extras"] = [e.value for e in plan.extras]
         if plan.user_visible_summary:
@@ -126,6 +129,7 @@ class PlanExecutor:
                 dataset_ids,
                 metrics=metrics_for_execution,
                 extras=plan.extras,
+                rolling_windows=plan.rolling_windows,
             )
 
         if plan.intent is Intent.REPORT:
@@ -135,6 +139,7 @@ class PlanExecutor:
                 dataset_ids,
                 metrics=metrics_for_execution,
                 charts=plan.charts or self._default_chart_kinds(),
+                rolling_windows=plan.rolling_windows,
             )
 
         if plan.intent is Intent.CHART:
@@ -144,6 +149,7 @@ class PlanExecutor:
                 dataset_ids,
                 charts=plan.charts or self._default_chart_kinds(),
                 extras=plan.extras,
+                rolling_windows=plan.rolling_windows,
             )
 
         raise QuantLabError(
@@ -200,6 +206,7 @@ class PlanExecutor:
         *,
         metrics: tuple[MetricName, ...],
         extras: tuple[AnalysisExtra, ...] = (),
+        rolling_windows: tuple[int, ...] = (60,),
     ) -> Run:
         env = self._call_inspect(run_id, session_id, dataset_ids)
         if env is not None and not env.ok:
@@ -233,6 +240,15 @@ class PlanExecutor:
                 session_id=session_id,
                 tool_name="compute_risk_metrics",
                 arguments={"analysis_id": analysis_id},
+            )
+            if not env.ok:
+                return self._runs.get_run(run_id, session_id)
+        if AnalysisExtra.ROLLING in extras:
+            env = self._registry.execute(
+                run_id=run_id,
+                session_id=session_id,
+                tool_name="compute_rolling_metrics",
+                arguments={"analysis_id": analysis_id, "windows": list(rolling_windows)},
             )
             if not env.ok:
                 return self._runs.get_run(run_id, session_id)
@@ -271,6 +287,7 @@ class PlanExecutor:
         *,
         metrics: tuple[MetricName, ...],
         charts: tuple[ChartKind, ...],
+        rolling_windows: tuple[int, ...] = (60,),
     ) -> Run:
         env = self._call_inspect(run_id, session_id, dataset_ids)
         if env is not None and not env.ok:
@@ -296,6 +313,7 @@ class PlanExecutor:
             arguments={
                 "analysis_id": analysis_id,
                 "kinds": [k.value for k in charts],
+                "rolling_windows": list(rolling_windows),
             },
         )
         if not env.ok:
@@ -322,6 +340,7 @@ class PlanExecutor:
         *,
         charts: tuple[ChartKind, ...],
         extras: tuple[AnalysisExtra, ...] = (),
+        rolling_windows: tuple[int, ...] = (60,),
     ) -> Run:
         env = self._call_inspect(run_id, session_id, dataset_ids)
         if env is not None and not env.ok:
@@ -337,12 +356,30 @@ class PlanExecutor:
         )
         if not env.ok:
             return self._runs.get_run(run_id, session_id)
+        if AnalysisExtra.ANOMALIES in extras:
+            env = self._registry.execute(
+                run_id=run_id,
+                session_id=session_id,
+                tool_name="detect_anomalies",
+                arguments={"analysis_id": analysis_id},
+            )
+            if not env.ok:
+                return self._runs.get_run(run_id, session_id)
         if AnalysisExtra.ROLLING in extras:
             env = self._registry.execute(
                 run_id=run_id,
                 session_id=session_id,
                 tool_name="compute_rolling_metrics",
-                arguments={"analysis_id": analysis_id, "windows": [20, 60, 252]},
+                arguments={"analysis_id": analysis_id, "windows": list(rolling_windows)},
+            )
+            if not env.ok:
+                return self._runs.get_run(run_id, session_id)
+        if AnalysisExtra.DESCRIBE_PRICE_SERIES in extras:
+            env = self._registry.execute(
+                run_id=run_id,
+                session_id=session_id,
+                tool_name="describe_price_series",
+                arguments={"analysis_id": analysis_id},
             )
             if not env.ok:
                 return self._runs.get_run(run_id, session_id)
@@ -353,6 +390,7 @@ class PlanExecutor:
             arguments={
                 "analysis_id": analysis_id,
                 "kinds": [k.value for k in charts],
+                "rolling_windows": list(rolling_windows),
             },
         )
         if not env.ok:

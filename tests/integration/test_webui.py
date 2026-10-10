@@ -330,6 +330,40 @@ def test_chart_png_served(server: _ServerThread) -> None:
     assert len(png_bytes) > 200
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+def test_chart_json_serves_correct_values_and_rejects_wrong_run(
+    server: _ServerThread, legacy: bool
+) -> None:
+    _seed_one(server)
+    _, body, _ = _http_post_json(
+        f"{server.url}/api/sessions/{SESSION}/messages",
+        {"text": "生成价格和回撤图表"},
+    )
+    run = json.loads(body)["run"]
+    store = server.state.controller.chart_store
+    chart_id = run["chart_ids"][0]
+    if legacy:
+        data_path = Path(store.get_data_path(chart_id, SESSION, run["run_id"]))
+        payload = json.loads(data_path.read_text(encoding="utf-8"))
+        payload.pop("schema_version")
+        payload["series"][0]["y"] = [100, 101, 99]
+        data_path.write_text(json.dumps(payload), encoding="utf-8")
+    status, data, headers = _http_get(
+        f"{server.url}/api/runs/{run['run_id']}/chart/{chart_id}.json"
+    )
+    assert status == 200
+    assert headers["Content-Type"].startswith("application/json")
+    artifact = json.loads(data)
+    assert artifact["kind"] == "drawdown"
+    assert artifact["data"]["series"][0]["y"] == pytest.approx([0, 0, 99 / 101 - 1])
+    _, body, _ = _http_post_json(
+        f"{server.url}/api/sessions/{SESSION}/messages", {"text": "趋势图"}
+    )
+    other_run = json.loads(body)["run"]
+    status, _, _ = _http_get(f"{server.url}/api/runs/{other_run['run_id']}/chart/{chart_id}.json")
+    assert status == 404
+
+
 def test_report_markdown_served(server: _ServerThread) -> None:
     csv = b"date,close\n2024-01-02,100\n2024-01-03,101\n2024-01-04,99\n"
     body = _build_multipart_csv(
@@ -357,6 +391,35 @@ def test_report_markdown_served(server: _ServerThread) -> None:
     assert status == 200
     assert "text/markdown" in headers.get("Content-Type", "")
     assert b"# QuantLab" in md
+
+
+def test_followup_report_inherits_metrics_only_context(server: _ServerThread) -> None:
+    _seed_one(server)
+    _, body, _ = _http_post_json(
+        f"{server.url}/api/sessions/{SESSION}/messages",
+        {"text": "分析 DEMO_A 的最大回撤 2024-01-02 2024-01-04"},
+    )
+    source = json.loads(body)["run"]
+    assert source["status"] == "succeeded"
+    assert not source["chart_ids"]
+    _, body, _ = _http_post_json(
+        f"{server.url}/api/sessions/{SESSION}/messages",
+        {"text": "生成一份报告", "context_run_id": source["run_id"]},
+    )
+    run = json.loads(body)["run"]
+    assert run["status"] == "succeeded"
+    assert run["intent"] == "report"
+    assert run["dataset_ids"] == source["dataset_ids"]
+    snapshot = server.state.run_service.get_run(run["run_id"], SESSION).context_snapshot
+    assert snapshot["requested_metrics"] == ["max_drawdown"]
+    assert snapshot["effective_end"] == "2024-01-04"
+    assert run["report_id"]
+    assert "报告已生成" in run["summary"]
+    status, markdown, _ = _http_get(
+        f"{server.url}/api/runs/{run['run_id']}/report/{run['report_id']}.md"
+    )
+    assert status == 200
+    assert b"DEMO_A" in markdown
 
 
 def test_message_without_datasets_returns_400(server: _ServerThread) -> None:
@@ -585,6 +648,26 @@ def test_planner_anomaly_extra_runs_detect_anomalies(server: _ServerThread) -> N
     assert "detect_anomalies" in tool_names
 
 
+def test_chart_and_anomalies_are_executed_and_presented(server: _ServerThread) -> None:
+    _seed_one(server)
+    status, body, _ = _http_post_json(
+        f"{server.url}/api/sessions/{SESSION}/messages",
+        {"text": "生成趋势图，并检查有没有异常常值"},
+    )
+    assert status == 200
+    payload = json.loads(body)
+    run = payload["run"]
+    assert run["status"] == "succeeded"
+    assert run["intent"] == "chart"
+    assert run["extras"] == ["anomalies"]
+    assert run["chart_ids"]
+    names = [tc["tool_name"] for tc in payload["tool_calls"]]
+    assert "detect_anomalies" in names
+    assert "create_charts" in names
+    assert "图表已生成" in run["summary"]
+    assert "异常" in run["summary"]
+
+
 def test_planner_risk_extra_runs_compute_risk_metrics(server: _ServerThread) -> None:
     _seed_one(server)
     status, body, _ = _http_post_json(
@@ -623,4 +706,131 @@ def test_planner_rolling_extra_runs_compute_rolling_metrics(
     tool_names = [tc["tool_name"] for tc in payload["tool_calls"]]
     assert "compute_rolling_metrics" in tool_names
     assert "create_charts" in tool_names
+    roller = next(
+        tc for tc in payload["tool_calls"] if tc["tool_name"] == "compute_rolling_metrics"
+    )
+    assert roller["data"]["windows"] == [60]
+    chart = next(tc for tc in payload["tool_calls"] if tc["tool_name"] == "create_charts")
+    assert chart["data"]["kinds"] == ["rolling_volatility"]
+    assert chart["data"]["windows"] == [60]
+    assert "数据不足" in payload["run"]["summary"]
     assert all(tc["status"] == "succeeded" for tc in payload["tool_calls"])
+
+
+def test_metrics_plus_description_answers_all_requested_parts(server: _ServerThread) -> None:
+    _seed_one(server)
+    _, body, _ = _http_post_json(
+        f"{server.url}/api/sessions/{SESSION}/messages",
+        {"text": "分析区间收益和最大回撤，再说明走势有什么特点"},
+    )
+    result = json.loads(body)
+    assert result["run"]["status"] == "succeeded"
+    assert result["run"]["intent"] == "metrics"
+    assert result["run"]["chart_ids"] == []
+    assert "区间收益" in result["run"]["summary"]
+    assert "最大回撤" in result["run"]["summary"]
+    assert "走势摘要" in result["run"]["summary"]
+
+
+def test_mixed_chart_request_returns_real_rolling_data(server: _ServerThread) -> None:
+    from datetime import date, timedelta
+    from math import sqrt
+    from statistics import stdev
+
+    prices = [100 + i % 7 + i * 0.1 for i in range(100)]
+    csv = "date,close\n" + "\n".join(
+        f"{date(2024, 1, 1) + timedelta(days=i)},{price}" for i, price in enumerate(prices)
+    )
+    body = _build_multipart_csv(
+        "file", csv.encode(), {"asset_id": "DEMO_A", "price_basis": "forward_adjusted"}
+    )
+    req = urllib.request.Request(
+        f"{server.url}/api/sessions/{SESSION}/datasets",
+        data=body,
+        method="POST",
+        headers={"Content-Type": "multipart/form-data; boundary=----qlTestBoundary1234567890"},
+    )
+    urllib.request.urlopen(req, timeout=5).read()
+    _, body, _ = _http_post_json(
+        f"{server.url}/api/sessions/{SESSION}/messages",
+        {"text": "生成归一化价格图、回撤图和60日滚动波动率图"},
+    )
+    result = json.loads(body)
+    assert result["run"]["status"] == "succeeded"
+    assert len(result["run"]["chart_ids"]) == 3
+    roller = next(
+        tc["data"] for tc in result["tool_calls"] if tc["tool_name"] == "compute_rolling_metrics"
+    )
+    expected = next(s for s in roller["series"] if s["metric"] == "rolling_volatility")
+    chart_call = next(
+        tc["data"] for tc in result["tool_calls"] if tc["tool_name"] == "create_charts"
+    )
+    index = chart_call["kinds"].index("rolling_volatility")
+    chart_id = chart_call["chart_ids"][index]
+    status, data, _ = _http_get(
+        f"{server.url}/api/runs/{result['run']['run_id']}/chart/{chart_id}.json"
+    )
+    assert status == 200
+    artifact = json.loads(data)
+    assert artifact["window"] == 60
+    values = artifact["data"]["series"][0]["y"]
+    assert values[:59] == [None] * 59
+    assert values[-1] == pytest.approx(expected["points"][-1]["value"])
+    assert values[-1] is not None
+    returns = [prices[i] / prices[i - 1] - 1 for i in range(1, len(prices))]
+    assert values[-1] == pytest.approx(stdev(returns[-60:]) * sqrt(252))
+    assert "60 日滚动年化波动率" in result["run"]["summary"]
+    _, body, _ = _http_post_json(
+        f"{server.url}/api/sessions/{SESSION}/messages",
+        {
+            "text": "分析这三个图",
+            "context_run_id": result["run"]["run_id"],
+        },
+    )
+    interpretation = json.loads(body)
+    assert interpretation["run"]["status"] == "succeeded"
+    assert interpretation["run"]["intent"] == "metrics"
+    assert interpretation["run"]["chart_ids"] == []
+    summary = interpretation["run"]["summary"]
+    assert "区间收益" in summary and "最大回撤" in summary and "走势摘要" in summary
+    assert "60 日滚动年化波动率" in summary and "历史滚动中位数" in summary
+    calls = interpretation["tool_calls"]
+    assert all(call["tool_name"] != "create_charts" for call in calls)
+    roller = next(call for call in calls if call["tool_name"] == "compute_rolling_metrics")
+    assert roller["data"]["windows"] == [60]
+
+
+def test_chart_interpretation_does_not_read_another_sessions_run(server: _ServerThread) -> None:
+    _seed_one(server)
+    _, body, _ = _http_post_json(
+        f"{server.url}/api/sessions/{SESSION}/messages", {"text": "趋势图"}
+    )
+    source = json.loads(body)["run"]
+    other = "00000000-0000-4000-8000-000000000098"
+    _, body, _ = _http_post_json(
+        f"{server.url}/api/sessions/{SESSION}/messages",
+        {"text": "分析这三个图", "context_run_id": source["run_id"]},
+    )
+    assert "哪 3 张" in json.loads(body)["run"]["summary"]
+    # The dataset can be seeded independently; the source run remains private.
+    csv = _build_multipart_csv(
+        "file",
+        b"date,close\n2024-01-02,100\n2024-01-03,101\n",
+        {"asset_id": "OTHER", "price_basis": "forward_adjusted"},
+    )
+    urllib.request.urlopen(
+        urllib.request.Request(
+            f"{server.url}/api/sessions/{other}/datasets",
+            data=csv,
+            method="POST",
+            headers={"Content-Type": "multipart/form-data; boundary=----qlTestBoundary1234567890"},
+        ),
+        timeout=5,
+    ).read()
+    _, body, _ = _http_post_json(
+        f"{server.url}/api/sessions/{other}/messages",
+        {"text": "分析这三个图", "context_run_id": source["run_id"]},
+    )
+    result = json.loads(body)
+    assert result["run"]["status"] == "failed"
+    assert result["tool_calls"] == []

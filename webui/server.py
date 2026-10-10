@@ -11,6 +11,7 @@ a small JSON API the page calls to drive ``AgentController`` /
     POST /api/sessions/{sid}/messages        — send user text, run agent
     GET  /api/runs/{rid}                     — get run state + tool calls
     GET  /api/runs/{rid}/chart/{cid}.png     — chart PNG (binary)
+    GET  /api/runs/{rid}/chart/{cid}.json    — interactive chart data
     GET  /api/runs/{rid}/report/{rid2}.md    — report markdown (text)
     GET  /api/runs/{rid}/dataset/{dsid}.csv  — normalized CSV (text)
     GET  /api/healthz                        — liveness check
@@ -48,7 +49,11 @@ from quantlab_agent.application.datasets import DatasetService
 from quantlab_agent.config import ModelConfig, load_config
 from quantlab_agent.domain.errors import QuantLabError
 from quantlab_agent.domain.models import (
+    AnalysisPlan,
+    ChartKind,
     DatasetMetadata,
+    DateRange,
+    Intent,
     MetricName,
     PriceBasis,
     RunMode,
@@ -70,6 +75,7 @@ _RE_SESSION_CSV = re.compile(rf"^/api/sessions/({_SID})/datasets/({_SID})\.csv$"
 _RE_MESSAGES = re.compile(rf"^/api/sessions/({_SID})/messages/?$")
 _RE_RUN = re.compile(rf"^/api/runs/({_RID})/?$")
 _RE_CHART = re.compile(rf"^/api/runs/({_RID})/chart/({_CID})\.png$")
+_RE_CHART_DATA = re.compile(rf"^/api/runs/({_RID})/chart/({_CID})\.json$")
 _RE_REPORT = re.compile(rf"^/api/runs/({_RID})/report/({_RID})\.md$")
 _RE_CSV = re.compile(rf"^/api/runs/({_RID})/dataset/({_SID})\.csv$")
 
@@ -243,7 +249,10 @@ def _serialize_run(run, records: tuple[Any, ...] = ()) -> dict[str, Any]:
         "intent": intent,
         "plan_summary": snapshot.get("plan_summary"),
         "extras": list(snapshot.get("extras") or []),
-        "summary": rich_summary or user_visible_summary or _derive_summary(run),
+        "summary": rich_summary
+        or failure_details.get("clarifying_question")
+        or user_visible_summary
+        or _derive_summary(run),
         "counters": {
             "tool_executions_used": run.counters.tool_executions_used,
             "model_interactions_used": run.counters.model_interactions_used,
@@ -258,6 +267,19 @@ def _serialize_run(run, records: tuple[Any, ...] = ()) -> dict[str, Any]:
 
 def _derive_rich_summary(run, records: tuple[Any, ...], intent: str | None) -> str | None:
     presenter_text = _summarize_run_presenter(run, records)
+    if intent == "report" and run.report_id and run.status.value == "succeeded":
+        return "\n\n".join(
+            text
+            for text in (
+                "报告已生成，已在右侧报告视图展示。对应图表仍可在图表视图查看。",
+                _summarize_metrics(run, records),
+                presenter_text,
+            )
+            if text
+        )
+    if intent == "metrics" or run.context_snapshot.get("answer_metrics"):
+        base = _summarize_metrics(run, records)
+        return "\n\n".join(text for text in (base, presenter_text) if text) or None
     if presenter_text is not None:
         return presenter_text
     if intent == "data_quality":
@@ -395,7 +417,7 @@ def _summarize_chart(run, records: tuple[Any, ...]) -> str | None:
         }
         kind_text = "、".join(labels.get(str(kind), str(kind)) for kind in kinds)
         lines.append(f"图表类型：{kind_text}。")
-    lines.append(f"已生成 {len(chart_ids)} 张图，可在右侧 Chart 查看。")
+    lines.append(f"已生成 {len(chart_ids)} 张图，可在右侧图表查看。")
     return "\n".join(lines)
 
 
@@ -578,6 +600,10 @@ class _Handler(BaseHTTPRequestHandler):
         if m:
             self._handle_get_chart(m.group(1), m.group(2))
             return
+        m = _RE_CHART_DATA.match(path)
+        if m:
+            self._handle_get_chart_data(m.group(1), m.group(2))
+            return
         m = _RE_REPORT.match(path)
         if m:
             self._handle_get_report(m.group(1), m.group(2))
@@ -735,10 +761,47 @@ class _Handler(BaseHTTPRequestHandler):
         )
         try:
             # Planner → Validator → Executor pipeline.
+            previous = None
+            previous_count = 0
+            reference_run_id = body.get("context_run_id")
+            if reference_run_id:
+                source = self.state.run_service.get_run(reference_run_id, session_id)
+                if source.status.value == "succeeded" and source.analysis_id:
+                    charts = [
+                        self.state.controller.chart_store.get(cid, session_id, source.run_id)
+                        for cid in source.chart_ids
+                    ]
+                    snapshot = source.context_snapshot
+                    previous = AnalysisPlan(
+                        intent=Intent.METRICS,
+                        dataset_refs=source.dataset_ids,
+                        date_range=DateRange(
+                            start=snapshot["effective_start"], end=snapshot["effective_end"]
+                        ),
+                        charts=tuple(dict.fromkeys(chart.kind for chart in charts))
+                        or tuple(ChartKind(kind) for kind in snapshot.get("requested_charts", [])),
+                        metrics=tuple(
+                            MetricName(name) for name in snapshot.get("requested_metrics", [])
+                        )
+                        or (MetricName.PERIOD_RETURN, MetricName.MAX_DRAWDOWN),
+                        rolling_windows=tuple(
+                            dict.fromkeys(
+                                chart.window for chart in charts if chart.window is not None
+                            )
+                        )
+                        or tuple(snapshot.get("rolling_windows", [60])),
+                    )
+                    previous_count = len(charts)
             ctx = PlannerContext(
                 session_id=session_id,
                 dataset_summaries=tuple(datasets),
+                previous_analysis=previous,
+                previous_chart_count=previous_count,
             )
+            if previous is not None:
+                self.state.run_service.update_context_snapshot(
+                    run.run_id, session_id, {"reference_run_id": reference_run_id}
+                )
             plan = self.state.planner.plan(text, ctx)
             resolved_or_exc = self.state.plan_validator.validate(plan, session_id=session_id)
             # If the plan needs explicit date/metric params that the user
@@ -862,6 +925,39 @@ class _Handler(BaseHTTPRequestHandler):
         session_id = self.state.controller._runs._runs.session_for(run_id)  # type: ignore[attr-defined]
         png_path = self.state.controller.chart_store.get_png_path(chart_id, session_id, run_id)
         self._write_bytes(HTTPStatus.OK, Path(png_path).read_bytes(), "image/png")
+
+    def _handle_get_chart_data(self, run_id: str, chart_id: str) -> None:
+        session_id = self.state.controller._runs._runs.session_for(run_id)
+        run = self.state.controller._runs.get_run(run_id, session_id)
+        if chart_id not in run.chart_ids:
+            raise NotFound("图表不属于当前分析。")
+        store = self.state.controller.chart_store
+        chart = store.get(chart_id, session_id, run_id)
+        payload = json.loads(
+            Path(store.get_data_path(chart_id, session_id, run_id)).read_text(encoding="utf-8")
+        )
+        # Older drawdown artifacts stored prices rather than the plotted values.
+        if chart.kind.value == "drawdown" and payload.get("schema_version", 1) < 2:
+            import pandas as pd
+
+            from quantlab_agent.domain.metrics import drawdown_series
+
+            for series in payload["series"]:
+                series["y"] = (
+                    drawdown_series(pd.Series(series["y"], dtype=float)).tolist()
+                    if len(series["y"]) >= 2
+                    else [None] * len(series["y"])
+                )
+            payload["schema_version"] = 2
+        self._write_json(
+            HTTPStatus.OK,
+            {
+                "chart_id": chart_id,
+                "kind": chart.kind.value,
+                "window": chart.window,
+                "data": payload,
+            },
+        )
 
     def _handle_get_report(self, run_id: str, report_id: str) -> None:
         session_id = self.state.controller._runs._runs.session_for(run_id)  # type: ignore[attr-defined]

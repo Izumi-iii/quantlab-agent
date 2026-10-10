@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -27,6 +27,7 @@ from quantlab_agent.domain.models import (
     ChartKind,
     MetricName,
     Provenance,
+    RollingReport,
     ToolCallRecord,
     ToolResultEnvelope,
     ToolStatus,
@@ -91,6 +92,9 @@ class ComputeMetricsInput(_StrictModel):
 class CreateChartsInput(_StrictModel):
     analysis_id: str = Field(min_length=36, max_length=36)
     kinds: tuple[ChartKind, ...] = Field(min_length=1)
+    rolling_windows: tuple[Annotated[int, Field(ge=2, le=2520)], ...] = Field(
+        default=(60,), min_length=1, max_length=6
+    )
 
 
 class BuildReportInput(_StrictModel):
@@ -393,16 +397,32 @@ def make_create_charts_handler(
             analysis_id=run.analysis_id,
         )
 
+        rolling_report = None
+        for record in reversed(run_service.list_tool_calls(ctx.run_id, ctx.session_id)):
+            if (
+                record.tool_name == "compute_rolling_metrics"
+                and record.result_envelope
+                and record.result_envelope.ok
+            ):
+                candidate = RollingReport.model_validate(record.result_envelope.data)
+                if candidate.analysis_id == args.analysis_id and set(args.rolling_windows).issubset(
+                    candidate.windows
+                ):
+                    rolling_report = candidate
+                    break
         artifacts = chart_service.create_charts(
             run_id=ctx.run_id,
             session_id=ctx.session_id,
             analysis=prepared,
             kinds=args.kinds,
+            rolling_windows=args.rolling_windows,
+            rolling_report=rolling_report,
         )
 
         return {
             "chart_ids": [a.chart_id for a in artifacts],
             "kinds": [a.kind.value for a in artifacts],
+            "windows": [a.window for a in artifacts],
             "png_paths": [
                 ctx.chart_store.get_png_path(a.chart_id, ctx.session_id, ctx.run_id)
                 for a in artifacts

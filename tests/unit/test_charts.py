@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 
+import pytest
+
 from quantlab_agent.adapters.local_stores import LocalChartStore, LocalRunStore
 from quantlab_agent.adapters.plotting import PlotService
 from quantlab_agent.application.analyses import PreparedAnalysis, PreparedAssetData
@@ -168,6 +170,22 @@ def test_chart_data_payload_is_round_trippable(tmp_path: Path) -> None:
     assert len(payload["series"][0]["x"]) == 4
 
 
+def test_single_observation_drawdown_remains_unavailable(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    runs = _seed_run(tmp_path)
+    prepared = _prepared()
+    asset = replace(prepared.assets[0], dates=prepared.assets[0].dates[:1], prices=(100.0,))
+    artifacts = _service(tmp_path, runs).create_charts(
+        run_id=RUN_ID,
+        session_id=SESSION,
+        analysis=replace(prepared, assets=(asset,)),
+        kinds=(ChartKind.DRAWDOWN,),
+    )
+    path = LocalChartStore(tmp_path).get_data_path(artifacts[0].chart_id, SESSION, RUN_ID)
+    assert json.loads(Path(path).read_text(encoding="utf-8"))["series"][0]["y"] == [None]
+
+
 def test_chart_data_sha256_matches_payload(tmp_path: Path) -> None:
     runs = _seed_run(tmp_path)
     runs.bind_analysis(RUN_ID, SESSION, ANALYSIS_ID)
@@ -184,6 +202,9 @@ def test_chart_data_sha256_matches_payload(tmp_path: Path) -> None:
     payload = json.loads(Path(data_path).read_text(encoding="utf-8"))
     expected = sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
     assert artifacts[0].data_sha256 == expected
+    assert payload["schema_version"] == 2
+    assert payload["axes"]["y"] == "drawdown"
+    assert payload["series"][0]["y"] == pytest.approx([0, 0, 99 / 101 - 1, 0])
 
 
 def test_png_files_match_matplotlib_output(tmp_path: Path) -> None:

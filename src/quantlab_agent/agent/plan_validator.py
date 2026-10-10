@@ -108,6 +108,7 @@ class PlanValidator:
             effective_end=effective_end,
             metrics=plan.metrics,
             charts=plan.charts,
+            rolling_windows=plan.rolling_windows,
             extras=plan.extras,
             clarifying_question=plan.clarifying_question,
             user_visible_summary=plan.user_visible_summary,

@@ -134,11 +134,13 @@ def test_build_report_writes_markdown_and_binds(tmp_path: Path) -> None:
 
     path = LocalReportStore(tmp_path).get_markdown_path(report.report_id, SESSION, RUN_ID)
     md = Path(path).read_text(encoding="utf-8")
-    assert "QuantLab analysis report" in md
-    assert "Deterministic demo mode" in md
+    assert "QuantLab 数据分析报告" in md
+    assert "确定性演示模式" in md
+    assert "## 1. 分析结论" in md
+    assert "虽然期末取得正收益" in md
     assert RUN_ID in md
     assert f"{0.089 * 100:.2f}%" in md
-    assert "Run completed at: n/a" not in md
+    assert "完成时间：未记录" not in md
 
 
 def test_build_report_rejects_unbound_analysis(tmp_path: Path) -> None:
@@ -240,8 +242,95 @@ def test_limitations_section_lists_unavailable_metrics(tmp_path: Path) -> None:
     md = Path(
         LocalReportStore(tmp_path).get_markdown_path(report.report_id, SESSION, RUN_ID)
     ).read_text(encoding="utf-8")
-    assert "date sequences differ" in md
-    assert "annualized_volatility" in md
+    assert "日期序列不一致" in md
+    assert "年化波动率" in md
+
+
+def _summary_metrics(*assets: tuple[str, float | None, float | None]) -> MetricResult:
+    return MetricResult(
+        metrics_id=METRICS_ID,
+        analysis_id=ANALYSIS_ID,
+        assets=tuple(
+            AssetMetricResult(
+                asset_id=name,
+                metrics={
+                    MetricName.PERIOD_RETURN: MetricValue(
+                        value=period,
+                        observations=100,
+                        unavailable_reason="insufficient data" if period is None else None,
+                    ),
+                    MetricName.MAX_DRAWDOWN: MetricValue(
+                        value=drawdown,
+                        observations=100,
+                        unavailable_reason="insufficient data" if drawdown is None else None,
+                    ),
+                },
+            )
+            for name, period, drawdown in assets
+        ),
+    )
+
+
+def test_report_interprets_positive_return_and_drawdown(tmp_path: Path) -> None:
+    run = _seeded_run(tmp_path).get_run(RUN_ID, SESSION)
+    text = ReportService._format_analysis_summary(run, _summary_metrics(("A", 0.9518, -0.7482)))
+    assert "+95.18%" in text
+    assert "74.82%" in text
+    assert "虽然期末取得正收益" in text
+    assert "297.14%" in text
+    assert "不表示已恢复或将恢复" in text
+
+
+@pytest.mark.parametrize("period,direction", [(-0.2, "低于"), (0, "等于")])
+def test_report_interprets_negative_and_flat_return(
+    tmp_path: Path, period: float, direction: str
+) -> None:
+    run = _seeded_run(tmp_path).get_run(RUN_ID, SESSION)
+    text = ReportService._format_analysis_summary(run, _summary_metrics(("A", period, -0.2)))
+    assert f"期末价格{direction}期初" in text
+    assert "虽然期末取得正收益" not in text
+
+
+def test_report_unavailable_values_do_not_invent_conclusions(tmp_path: Path) -> None:
+    run = _seeded_run(tmp_path).get_run(RUN_ID, SESSION)
+    text = ReportService._format_analysis_summary(run, _summary_metrics(("A", None, None)))
+    assert "当前没有可用指标" in text
+    assert "期末价格高于期初" not in text
+    assert "回到此前高点需上涨" not in text
+
+
+def test_report_compares_only_aligned_complete_metrics(tmp_path: Path) -> None:
+    run = _seeded_run(tmp_path).get_run(RUN_ID, SESSION)
+    metrics = _summary_metrics(("A", 0.2, -0.5), ("B", 0.1, -0.1))
+    text = ReportService._format_analysis_summary(run, metrics)
+    assert "A 的区间收益最高" in text
+    assert "10.00 个百分点" in text
+    assert "B 的最大回撤较浅" in text
+    assert "不能把收益排名直接当作综合优劣" in text
+    run = run.model_copy(update={"context_snapshot": {"alignment_policy": "single_asset_dates"}})
+    text = ReportService._format_analysis_summary(run, metrics)
+    assert "不做直接排名" in text
+    assert "区间收益最高" not in text
+
+
+def test_report_zero_drawdown_and_short_volatility_sample(tmp_path: Path) -> None:
+    run = _seeded_run(tmp_path).get_run(RUN_ID, SESSION)
+    metrics = _summary_metrics(("A", 0.1, 0))
+    asset = metrics.assets[0].model_copy(
+        update={
+            "metrics": {
+                **metrics.assets[0].metrics,
+                MetricName.ANNUALIZED_VOLATILITY: MetricValue(value=0.12, observations=10),
+            }
+        }
+    )
+    text = ReportService._format_analysis_summary(
+        run, metrics.model_copy(update={"assets": (asset,)})
+    )
+    assert "不意味着未来没有风险" in text
+    assert "不是预期收益" in text
+    assert "少于 20 条" in text
+    assert "需上涨约" not in text
 
 
 def test_build_report_marks_run_succeeded(tmp_path: Path) -> None:

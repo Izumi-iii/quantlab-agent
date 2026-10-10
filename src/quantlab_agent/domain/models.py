@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -400,6 +400,9 @@ class AnalysisPlan(FrozenModel):
     date_range: DateRange | None = None
     metrics: tuple[MetricName, ...] = ()
     charts: tuple[ChartKind, ...] = ()
+    rolling_windows: tuple[Annotated[int, Field(ge=2, le=2520)], ...] = Field(
+        default=(60,), min_length=1, max_length=6
+    )
     extras: tuple["AnalysisExtra", ...] = ()
     clarifying_question: str | None = None
     user_visible_summary: str = ""
@@ -434,6 +437,9 @@ class ResolvedPlan(FrozenModel):
     effective_end: date | None = None
     metrics: tuple[MetricName, ...] = ()
     charts: tuple[ChartKind, ...] = ()
+    rolling_windows: tuple[Annotated[int, Field(ge=2, le=2520)], ...] = Field(
+        default=(60,), min_length=1, max_length=6
+    )
     extras: tuple["AnalysisExtra", ...] = ()
     clarifying_question: str | None = None
     user_visible_summary: str = ""
@@ -441,6 +447,7 @@ class ResolvedPlan(FrozenModel):
 
 
 class ReportSection(StrEnum):
+    ANALYSIS_SUMMARY = "analysis_summary"
     OVERVIEW = "overview"
     DATA_SOURCES = "data_sources"
     DATA_QUALITY = "data_quality"
@@ -551,6 +558,7 @@ class ChartArtifact(FrozenModel):
     run_id: str
     analysis_id: str
     kind: ChartKind
+    window: int | None = None
     png_path: str
     data_path: str
     data_sha256: str

@@ -110,7 +110,33 @@ _IN_SCOPE_TERMS = (
     "稳",
     "夏普",
     "在险价值",
+    "趋势",
+    "走势",
+    "画图",
+    "画一下",
+    "作图",
+    "异常",
+    "跳变",
+    "缺口",
+    "概况",
+    "字段",
+    "列名",
+    "滚动",
+    "窗口",
+    "plot",
+    "graph",
+    "trend",
+    "anomal",
+    "outlier",
+    "profile",
+    "rolling",
 )
+
+
+def is_out_of_scope_request(text: str) -> bool:
+    """Recognize explicit unsupported requests, not unknown phrasing."""
+    normalized = text.strip().lower()
+    return any(term in normalized for term in _OUT_OF_SCOPE_TERMS)
 
 
 def is_supported_analysis_request(text: str) -> bool:
@@ -118,7 +144,7 @@ def is_supported_analysis_request(text: str) -> bool:
     normalized = text.strip().lower()
     if not normalized:
         return False
-    if any(term in normalized for term in _OUT_OF_SCOPE_TERMS):
+    if is_out_of_scope_request(text):
         return False
     return any(term in normalized for term in _IN_SCOPE_TERMS)
 

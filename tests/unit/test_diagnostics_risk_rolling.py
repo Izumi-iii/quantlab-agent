@@ -97,3 +97,12 @@ def test_rolling_metrics_compute_windows() -> None:
     assert len(series) == 1
     assert series[0].window == 20
     assert series[0].points[-1].value is not None
+
+
+def test_rolling_drawdown_keeps_in_window_loss_after_recovery() -> None:
+    import pandas as pd
+    import pytest
+
+    values = RollingMetricsService._rolling_drawdown(pd.Series([100, 80, 110]), 3)
+    assert values.iloc[:2].isna().all()
+    assert values.iloc[-1] == pytest.approx(-0.2)

@@ -190,9 +190,23 @@ def summarize_chart(run: Run, tool_calls: tuple[Any, ...]) -> str:
         return "未生成图表。"
     chart_ids = payload.get("chart_ids") or []
     kinds = payload.get("kinds") or []
+    windows = payload.get("windows") or []
     if not chart_ids:
         return "未生成图表。"
-    return f"图表已生成：{len(chart_ids)} 张（{', '.join(kinds) if kinds else '默认图表'}）。"
+    labels = {
+        "normalized_prices": "归一化价格走势",
+        "drawdown": "历史回撤",
+        "rolling_return": "滚动收益",
+        "rolling_volatility": "滚动年化波动率",
+        "rolling_drawdown": "窗口最大回撤",
+    }
+    names = [
+        f"{windows[index]} 日" + labels.get(kind, kind)
+        if index < len(windows) and windows[index]
+        else labels.get(kind, kind)
+        for index, kind in enumerate(kinds)
+    ]
+    return f"图表已生成：{len(chart_ids)} 张（{'、'.join(names) if names else '默认图表'}）。"
 
 
 def summarize_anomalies(run: Run, tool_calls: tuple[Any, ...]) -> str | None:
@@ -268,18 +282,41 @@ def summarize_rolling(run: Run, tool_calls: tuple[Any, ...]) -> str | None:
         return None
     if not report.series:
         return "滚动指标不可用。"
-    sample = report.series[0]
-    points = sample.points
-    non_null = [p.value for p in points if p.value is not None]
-    note = ""
-    if non_null:
-        last = non_null[-1]
-        if "volatility" in sample.metric:
-            note = f"\n- 最新 {sample.window} 日滚动波动率：{last * 100:.2f}%"
-        elif "return" in sample.metric:
-            note = f"\n- 最新 {sample.window} 日滚动收益：{last * 100:+.2f}%"
+    kinds = set(run.context_snapshot.get("requested_charts") or [])
+    labels = {
+        "rolling_volatility": "滚动年化波动率",
+        "rolling_return": "滚动收益",
+        "rolling_drawdown": "窗口最大回撤",
+        "rolling_sharpe": "滚动夏普比率",
+    }
+    notes = []
+    for sample in report.series:
+        if kinds and sample.metric not in kinds:
+            continue
+        valid = [point for point in sample.points if point.value is not None]
+        label = f"{sample.asset_id} · {sample.window} 日{labels[sample.metric]}"
+        if valid:
+            point = valid[-1]
+            value = (
+                f"{point.value:.2f}"
+                if sample.metric == "rolling_sharpe"
+                else f"{point.value * 100:.2f}%"
+            )
+            notes.append(f"- {label}：{value}（{point.date}）")
+            if (
+                run.context_snapshot.get("reference_run_id")
+                and sample.metric == "rolling_volatility"
+            ):
+                typical = statistics.median(p.value for p in valid)
+                peak = max(valid, key=lambda p: p.value)
+                relative = (
+                    "高于" if point.value > typical else "低于" if point.value < typical else "等于"
+                )
+                notes.append(
+                    f"  最新值{relative}历史滚动中位数 {typical * 100:.2f}%；最高值 {peak.value * 100:.2f}%（{peak.date}）。"
+                )
         else:
-            note = f"\n- 最新 {sample.window} 日滚动指标：{last:.4f}"
+            notes.append(f"- {label}：数据不足，尚无完整窗口。")
     # Regime change hint: compare last 60d vol vs median vol on the same series.
     regime = ""
     vol_series = next(
@@ -294,8 +331,9 @@ def summarize_rolling(run: Run, tool_calls: tuple[Any, ...]) -> str | None:
             if median > 0 and last_v > 1.5 * median:
                 regime = "\n- 最近 60 日波动率明显高于历史滚动中位数。"
     return (
-        f"滚动指标已计算：窗口 {list(report.windows)}，共 {len(report.series)} 条序列。"
-        f"{note}{regime}"
+        f"滚动指标已计算：窗口 {list(report.windows)}（按观测条数，非自然日）。\n"
+        + "\n".join(notes)
+        + regime
     )
 
 
@@ -320,15 +358,18 @@ def summarize_run(run: Run, tool_calls: tuple[Any, ...]) -> str | None:
 
     if intent is Intent.PROFILE:
         return summarize_profile(run, tool_calls)
-    if intent is Intent.METRICS and AnalysisExtra.DESCRIBE_PRICE_SERIES in extras:
-        return summarize_describe(run, tool_calls)
-    if intent is Intent.METRICS and AnalysisExtra.RISK in extras:
-        return summarize_risk(run, tool_calls)
-    if intent is Intent.DATA_QUALITY and AnalysisExtra.ANOMALIES in extras:
-        return summarize_anomalies(run, tool_calls)
-    if intent is Intent.CHART and AnalysisExtra.ROLLING in extras:
-        return summarize_rolling(run, tool_calls)
-    return None
+    parts = []
+    for extra, presenter in (
+        (AnalysisExtra.DESCRIBE_PRICE_SERIES, summarize_describe),
+        (AnalysisExtra.RISK, summarize_risk),
+        (AnalysisExtra.ANOMALIES, summarize_anomalies),
+        (AnalysisExtra.ROLLING, summarize_rolling),
+    ):
+        if extra in extras:
+            parts.append(presenter(run, tool_calls))
+    if intent is Intent.CHART and parts:
+        parts.append(summarize_chart(run, tool_calls))
+    return "\n".join(part for part in parts if part) or None
 
 
 __all__ = [

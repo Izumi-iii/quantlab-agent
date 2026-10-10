@@ -13,7 +13,14 @@ from quantlab_agent.agent.planner import (
     PlannerError,
     RulePlanner,
 )
-from quantlab_agent.domain.models import AnalysisExtra, ChartKind, Intent, MetricName
+from quantlab_agent.domain.models import (
+    AnalysisExtra,
+    AnalysisPlan,
+    ChartKind,
+    DateRange,
+    Intent,
+    MetricName,
+)
 from quantlab_agent.ports.model_provider import ModelTurn
 
 
@@ -36,6 +43,41 @@ def _ctx(*asset_ids: str) -> PlannerContext:
 def test_rule_planner_out_of_scope_short_circuits() -> None:
     plan = RulePlanner().plan("推荐股票", _ctx("DEMO_A", "DEMO_B"))
     assert plan.intent is Intent.OUT_OF_SCOPE
+
+
+@pytest.mark.parametrize(
+    "text", ["生成一份报告", "帮我出一份分析报告", "整理完整报告", "导出分析报告"]
+)
+def test_report_phrases_with_multiple_datasets(text: str) -> None:
+    plan = RulePlanner().plan(text, _ctx("DEMO_A", "DEMO_B"))
+    assert plan.intent is Intent.REPORT
+
+
+def test_report_inherits_analysis_but_explicit_parameters_override() -> None:
+    ctx = _ctx("DEMO_A", "DEMO_B")
+    previous = AnalysisPlan(
+        intent=Intent.METRICS,
+        dataset_refs=("DEMO_B",),
+        date_range=DateRange(start="2024-01-03", end="2024-01-12"),
+        metrics=(MetricName.MAX_DRAWDOWN,),
+        charts=(ChartKind.ROLLING_VOLATILITY,),
+        rolling_windows=(20,),
+    )
+    ctx = PlannerContext(
+        session_id=ctx.session_id,
+        dataset_summaries=ctx.dataset_summaries,
+        previous_analysis=previous,
+    )
+    plan = RulePlanner().plan("生成一份报告", ctx)
+    assert plan.dataset_refs == previous.dataset_refs
+    assert plan.date_range == previous.date_range
+    assert plan.metrics == previous.metrics
+    assert plan.charts == previous.charts
+    assert plan.rolling_windows == (20,)
+    explicit = RulePlanner().plan("生成 DEMO_A 的区间收益报告 2024-01-02 2024-01-15", ctx)
+    assert explicit.dataset_refs == ("DEMO_A",)
+    assert explicit.date_range.start.isoformat() == "2024-01-02"
+    assert explicit.metrics == (MetricName.PERIOD_RETURN,)
 
 
 def test_rule_planner_data_quality_with_two_datasets_runs_on_all() -> None:
@@ -113,11 +155,78 @@ def test_rule_planner_trend_chart_uses_chart_intent() -> None:
     assert plan.charts == (ChartKind.NORMALIZED_PRICES,)
 
 
-def test_rule_planner_rolling_chart_does_not_emit_unsupported_chart_kinds() -> None:
+@pytest.mark.parametrize("text", ["趋势图", "画一下走势", "接着画图"])
+def test_rule_planner_short_chart_requests(text: str) -> None:
+    plan = RulePlanner().plan(text, _ctx("DEMO_A"))
+    assert plan.intent is Intent.CHART
+    assert plan.dataset_refs == ("DEMO_A",)
+
+
+def test_rule_planner_chart_and_anomalies() -> None:
+    plan = RulePlanner().plan("生成趋势图，并检查有没有异常常值", _ctx("DEMO_A"))
+    assert plan.intent is Intent.CHART
+    assert plan.extras == (AnalysisExtra.ANOMALIES,)
+
+
+def test_rule_planner_unknown_request_clarifies() -> None:
+    plan = RulePlanner().plan("再处理一下", _ctx("DEMO_A"))
+    assert plan.intent is Intent.CLARIFY
+
+
+def test_rule_planner_rolling_chart_preserves_kind_and_window() -> None:
     plan = RulePlanner().plan("生成 60 日滚动波动率图", _ctx("DEMO_A"))
     assert plan.intent is Intent.CHART
     assert AnalysisExtra.ROLLING in plan.extras
-    assert plan.charts == (ChartKind.NORMALIZED_PRICES,)
+    assert plan.charts == (ChartKind.ROLLING_VOLATILITY,)
+    assert plan.rolling_windows == (60,)
+
+
+def test_metrics_and_description_are_not_mistaken_for_chart() -> None:
+    plan = RulePlanner().plan("分析区间收益和最大回撤，再说明走势有什么特点", _ctx("DEMO_A"))
+    assert plan.intent is Intent.METRICS
+    assert plan.metrics == (MetricName.PERIOD_RETURN, MetricName.MAX_DRAWDOWN)
+    assert plan.charts == ()
+    assert AnalysisExtra.DESCRIBE_PRICE_SERIES in plan.extras
+
+
+def test_mixed_chart_kinds_are_preserved() -> None:
+    plan = RulePlanner().plan("生成归一化价格图、回撤图和60日滚动波动率图", _ctx("DEMO_A"))
+    assert set(plan.charts) == {
+        ChartKind.NORMALIZED_PRICES,
+        ChartKind.DRAWDOWN,
+        ChartKind.ROLLING_VOLATILITY,
+    }
+    assert plan.rolling_windows == (60,)
+
+
+def test_chart_interpretation_uses_prior_analysis_context() -> None:
+    from dataclasses import replace
+
+    from quantlab_agent.domain.models import AnalysisPlan, DateRange
+
+    context = replace(
+        _ctx("DEMO_A", "DEMO_B"),
+        previous_analysis=AnalysisPlan(
+            intent=Intent.CHART,
+            dataset_refs=("DEMO_B",),
+            date_range=DateRange(start="2024-01-03", end="2024-01-12"),
+            charts=(ChartKind.NORMALIZED_PRICES, ChartKind.DRAWDOWN, ChartKind.ROLLING_VOLATILITY),
+            rolling_windows=(60,),
+        ),
+        previous_chart_count=3,
+    )
+    plan = RulePlanner().plan("分析这三个图", context)
+    assert plan.intent is Intent.METRICS
+    assert plan.dataset_refs == ("DEMO_B",)
+    assert plan.date_range == context.previous_analysis.date_range
+    assert plan.rolling_windows == (60,)
+    assert set(plan.extras) == {AnalysisExtra.DESCRIBE_PRICE_SERIES, AnalysisExtra.ROLLING}
+
+
+def test_chart_interpretation_without_context_asks_specific_question() -> None:
+    plan = RulePlanner().plan("分析这三个图", _ctx("DEMO_A"))
+    assert plan.intent is Intent.CLARIFY
+    assert "选择" in plan.clarifying_question
 
 
 def test_llm_planner_parses_valid_json() -> None:

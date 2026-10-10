@@ -18,11 +18,30 @@ import matplotlib.dates as mdates  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
 import pandas as pd  # noqa: E402
 
+from quantlab_agent.domain.metrics import drawdown_series  # noqa: E402
+
 _PNG_MAGIC = b"\x89PNG"
 
 
 class PlotService:
     """Render chart PNGs and emit a JSON-friendly data payload."""
+
+    def render_series(
+        self, *, series_by_asset: dict[str, pd.Series], title: str, value_label: str
+    ) -> tuple[bytes, dict[str, Any]]:
+        fig, ax = plt.subplots(figsize=(8.0, 4.5), dpi=120)
+        for asset_id, series in series_by_asset.items():
+            ax.plot(series.index, series.to_numpy(), label=asset_id, linewidth=1.5)
+        ax.set_title(title)
+        ax.set_xlabel("date")
+        ax.set_ylabel(value_label)
+        ax.legend(loc="best", fontsize=9)
+        ax.grid(True, alpha=0.3)
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+        fig.autofmt_xdate()
+        result = self._finalize(fig, series_by_asset, value_label=value_label)
+        plt.close(fig)
+        return result
 
     def render_normalized_prices(
         self,
@@ -53,9 +72,14 @@ class PlotService:
         title: str,
     ) -> tuple[bytes, dict[str, Any]]:
         fig, ax = plt.subplots(figsize=(8.0, 4.5), dpi=120)
+        drawdowns: dict[str, pd.Series] = {}
         for asset_id, series in series_by_asset.items():
-            running_peak = series.cummax()
-            drawdown = series / running_peak - 1.0
+            drawdown = (
+                drawdown_series(series)
+                if len(series) >= 2
+                else pd.Series(float("nan"), index=series.index)
+            )
+            drawdowns[asset_id] = drawdown
             ax.fill_between(
                 series.index,
                 drawdown.to_numpy(),
@@ -71,7 +95,7 @@ class PlotService:
         ax.grid(True, alpha=0.3)
         ax.xaxis.set_major_locator(mdates.AutoDateLocator())
         fig.autofmt_xdate()
-        png_bytes, data_payload = self._finalize(fig, series_by_asset, value_label="drawdown")
+        png_bytes, data_payload = self._finalize(fig, drawdowns, value_label="drawdown")
 
         ax.clear()
         plt.close(fig)
@@ -98,12 +122,13 @@ class PlotService:
         # reach disk intact.
 
         data_payload: dict[str, Any] = {
+            "schema_version": 2,
             "axes": {"x": "date", "y": value_label},
             "series": [
                 {
                     "asset_id": asset_id,
                     "x": [ts.date().isoformat() for ts in series.index],
-                    "y": [float(v) for v in series.to_numpy()],
+                    "y": [float(v) if pd.notna(v) else None for v in series.to_numpy()],
                 }
                 for asset_id, series in series_by_asset.items()
             ],

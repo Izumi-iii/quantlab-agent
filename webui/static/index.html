@@ -335,7 +335,8 @@
       overflow: auto;
       display: grid;
       align-content: start;
-      justify-content: center;
+      grid-template-columns: minmax(0, 1fr);
+      justify-items: center;
       padding: 30px 22px;
       min-height: 0;
       overscroll-behavior: contain;
@@ -373,25 +374,34 @@
     td:first-child, th:first-child { width: 70px; text-align: center; color: var(--muted); background: #fafafa; }
     tr:last-child td { border-bottom: 0; }
     .chart-card {
-      border: 1px solid var(--line); border-radius: 12px;
-      background: #fff; padding: 18px 18px 14px;
+      background: #fff; padding: 0; min-width: 0;
     }
     .chart-toolbar {
-      display: flex; align-items: center; gap: 14px;
-      color: var(--muted); font-size: 13px; margin-bottom: 10px;
+      display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+      color: var(--muted); font-size: 12px; margin-bottom: 10px;
     }
+    .chart-toolbar label { display: flex; align-items: center; gap: 4px; min-width: 0; white-space: nowrap; }
+    .chart-toolbar select {
+      min-width: 0; max-width: 100%; border: 1px solid var(--line);
+      border-radius: 4px; padding: 5px; background: white; font: inherit; color: var(--text);
+    }
+    .chart-toolbar .chart-picker { flex: 1 1 170px; }
+    .chart-toolbar .chart-picker select { width: 100%; }
+    .chart-tool {
+      width: 30px; height: 30px; flex: 0 0 30px; border: 1px solid var(--line);
+      background: white; border-radius: 4px; display: grid; place-items: center;
+      color: var(--text); cursor: pointer;
+    }
+    .chart-tool svg { width: 16px; height: 16px; }
+    .chart-tool:disabled { opacity: .4; cursor: default; }
+    .chart-tool:hover:not(:disabled) { background: #e9f4ff; }
+    .chart-meta { color: var(--muted); font-size: 12px; margin: 0 0 8px; overflow-wrap: anywhere; }
     .big-chart {
-      height: 300px;
-      border-left: 2px solid #9ca3af;
-      border-bottom: 2px solid #9ca3af;
-      margin: 18px 34px 14px;
+      height: 420px; width: 100%; min-width: 0;
+      margin: 0;
       position: relative;
-      background:
-        linear-gradient(to right, transparent 19%, rgba(0,0,0,.12) 20%, transparent 21%),
-        linear-gradient(to bottom, transparent 24%, rgba(0,0,0,.12) 25%, transparent 26%);
-      background-size: 78px 100%, 100% 54px;
-      display: flex; align-items: center; justify-content: center;
     }
+    .big-chart .empty-state { padding: 48px 12px; }
     .big-chart img { max-width: 100%; max-height: 100%; object-fit: contain; }
     .chart-label-y {
       position: absolute; left: -44px; top: 98px;
@@ -507,11 +517,21 @@
     }
     .modal-actions .primary { background: var(--accent); border-color: var(--accent); color: #fff; }
     @media (max-width: 1080px) {
+      html, body { height: auto; overflow: auto; }
       .app { grid-template-columns: 1fr; height: auto; }
       .app.preview-collapsed { grid-template-columns: 1fr; }
       .app.preview-collapsed .composer { width: 100%; min-width: 0; border-right: 0; }
       .workspace { min-height: 780px; border-right: 0; border-bottom: 1px solid var(--line); }
       .preview { min-height: 720px; }
+    }
+    @media (max-width: 600px) {
+      .nav { display: none; }
+      .brand { gap: 6px; }
+      .brand-title { font-size: 16px; }
+      .top-actions { gap: 6px; font-size: 12px; }
+      .preview-body { padding: 18px 10px; }
+      .chart-toolbar .chart-picker { flex-basis: 100%; }
+      .preview-footer { height: auto; min-height: 58px; flex-wrap: wrap; padding: 10px 12px; }
     }
   </style>
 </head>
@@ -611,16 +631,19 @@
         <div class="chart-wrap" id="chartView">
           <div class="chart-card">
             <div class="chart-toolbar">
-              🔍 ━━━━━ ◉ ━━━━━ 🔎
-              <span>📊 line</span>
-              <span>Curve Default</span>
-              <span>Zero Y ●</span>
-              <span>X as Temporal</span>
+              <label class="chart-picker">图表<select id="chartPicker" aria-label="选择图表" disabled></select></label>
+              <button class="chart-tool" id="chartZoomIn" title="放大时间区间" aria-label="放大时间区间" disabled><i data-lucide="zoom-in"></i></button>
+              <button class="chart-tool" id="chartZoomOut" title="缩小时间区间" aria-label="缩小时间区间" disabled><i data-lucide="zoom-out"></i></button>
+              <button class="chart-tool" id="chartReset" title="恢复全图" aria-label="恢复全图" disabled><i data-lucide="rotate-ccw"></i></button>
+              <button class="chart-tool" id="chartDownload" title="下载当前图表" aria-label="下载当前图表" disabled><i data-lucide="download"></i></button>
+              <label>样式<select id="chartStyle" disabled><option value="line">折线</option><option value="area">面积</option><option value="step">阶梯线</option></select></label>
+              <label>横轴<select id="chartAxis" disabled><option value="time">实际日期</option><option value="category">交易序号</option></select></label>
+              <label><input type="checkbox" id="chartZero" disabled>包含零点</label>
             </div>
+            <p class="chart-meta" id="chartMeta" aria-live="polite"></p>
             <div class="big-chart" id="chartContainer">
               <div class="empty-state">尚无图表。完成分析后，归一化价格和回撤图会出现在这里。</div>
             </div>
-            <p style="text-align:center;color:var(--muted);">AI 生成结果可能不准确，请自行核查！</p>
           </div>
         </div>
 
@@ -632,9 +655,9 @@
       </div>
 
       <footer class="preview-footer">
-        <button class="footer-btn active" data-view="table">Table</button>
-        <button class="footer-btn" data-view="chart">Chart</button>
-        <button class="footer-btn" data-view="report">Report</button>
+        <button class="footer-btn active" data-view="table">表格</button>
+        <button class="footer-btn" data-view="chart">图表</button>
+        <button class="footer-btn" data-view="report">报告</button>
         <button class="footer-btn" id="downloadCsvBtn">CSV</button>
         <span id="rowCount">0 行</span>
         <span id="runStatus"></span>
@@ -680,6 +703,9 @@
     </div>
   </div>
 
+  <script src="/static/echarts.min.js"></script>
+  <script src="/static/lucide.min.js"></script>
+  <script src="/static/chart-preview.js"></script>
   <script>
     "use strict";
 
@@ -702,6 +728,7 @@
       datasets: [],
       runs: [],
       activeRunId: null,
+      lastSuccessfulRunId: null,
       activeDatasetId: null,
       csvCache: null,
       csvRows: [],
@@ -709,6 +736,8 @@
       hasChart: false,
       hasReport: false,
     };
+    const chartPreview = new QuantLabChartPreview();
+    lucide.createIcons();
 
     // ----- view switching (preserved from demo) --------------------------
 
@@ -732,6 +761,7 @@
       footerButtons.forEach((button) => {
         button.classList.toggle("active", button.dataset.view === name);
       });
+      if (name === "chart") requestAnimationFrame(() => chartPreview.resize());
     }
     footerButtons.forEach((node) => {
       node.addEventListener("click", () => showView(node.dataset.view));
@@ -972,6 +1002,7 @@
       try {
         const data = await apiGet(`/api/runs/${runId}`);
         state.activeRunId = runId;
+        if (data.run.status === 'succeeded') state.lastSuccessfulRunId = runId;
         renderRunIntoPreview(data);
       } catch (e) {
         console.warn("run load failed:", e);
@@ -983,23 +1014,17 @@
       const statusEl = document.querySelector("#runStatus");
       statusEl.innerHTML = statusPill(run.status);
 
-      // First chart image -> preview chart view.
-      const chartTool = (tool_calls || []).find((t) =>
-        t.tool_name === "create_charts" && t.ok && t.data && t.data.chart_ids && t.data.chart_ids.length
-      );
-      if (chartTool && chartTool.data.chart_ids.length) {
-        const chartId = chartTool.data.chart_ids[0];
-        const container = document.querySelector("#chartContainer");
-        container.innerHTML = `<img src="/api/runs/${run.run_id}/chart/${chartId}.png" alt="chart">`;
+      chartPreview.setRun(run, tool_calls || []);
+      state.hasChart = chartPreview.entries.length > 0;
+      if (run.chart_ids && run.chart_ids.length) {
         document.querySelector("#previewTitle").firstChild.textContent =
-          `Run ${run.run_id.slice(0, 8)}…`;
-        state.hasChart = true;
+          `分析结果 ${run.run_id.slice(0, 8)}…`;
       }
       // Report markdown -> preview report view.
       if (run.report_id) {
         fetch(`/api/runs/${run.run_id}/report/${run.report_id}.md`)
           .then((r) => r.ok ? r.text() : "")
-          .then((md) => { renderMarkdownReport(md); });
+          .then((md) => { renderMarkdownReport(md); showView("report"); });
         document.querySelector("#viewChartLink").hidden = false;
         state.hasReport = true;
       }
@@ -1203,10 +1228,10 @@
         '<div class="empty-state" id="timelineEmpty">向 Agent 提问后，过程会出现在这里。</div>';
       document.querySelector("#explainBox").hidden = true;
       state.activeRunId = null;
+      state.lastSuccessfulRunId = null;
       state.hasChart = false;
       state.hasReport = false;
-      document.querySelector("#chartContainer").innerHTML =
-        '<div class="empty-state">尚无图表。完成分析后，归一化价格和回撤图会出现在这里。</div>';
+      chartPreview.clear();
       document.querySelector("#reportContainer").innerHTML =
         '<div class="report-empty">尚无报告。运行一次完整分析后，报告会出现于此。</div>';
       document.querySelector("#viewChartLink").hidden = true;
@@ -1287,12 +1312,17 @@
       let thinkingStep = null;
       let animation = null;
       try {
-        const request = apiPostJson(`/api/sessions/${sessionId}/messages`, { text });
+        const request = apiPostJson(`/api/sessions/${sessionId}/messages`, {
+          text, context_run_id: /报告|report/i.test(text)
+            ? (state.lastSuccessfulRunId || chartPreview.runId)
+            : (chartPreview.runId || state.lastSuccessfulRunId || state.activeRunId),
+        });
         animation = playProcessAnimation(timeline, text);
         const [data, step] = await Promise.all([request, animation]);
         thinkingStep = step;
         thinkingStep.remove();
         state.activeRunId = data.run.run_id;
+        if (data.run.status === 'succeeded') state.lastSuccessfulRunId = data.run.run_id;
         state.activeRun = data.run;
         renderTimeline(data.tool_calls, data.run.status);
         renderRunIntoPreview(data);

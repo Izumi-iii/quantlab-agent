@@ -24,7 +24,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from quantlab_agent.agent.controller import is_supported_analysis_request
+from quantlab_agent.agent.controller import is_out_of_scope_request
 from quantlab_agent.domain.models import (
     AnalysisExtra,
     AnalysisPlan,
@@ -48,7 +48,8 @@ PLANNER_SYSTEM_PROMPT = (
     '  "dataset_refs": ["DEMO_A", "DEMO_B", ...],   // empty means "all in session"\n'
     '  "date_range": {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"} | null,\n'
     '  "metrics": ["period_return", "annualized_volatility", "max_drawdown"],\n'
-    '  "charts": ["normalized_prices", "drawdown"],\n'
+    '  "charts": ["normalized_prices", "drawdown", "rolling_return", "rolling_volatility", "rolling_drawdown"],\n'
+    '  "rolling_windows": [60],  // requested observation windows, 2-2520, default 60\n'
     '  "extras": ["describe_price_series", "risk", "anomalies", "rolling"],\n'
     '  "clarifying_question": string | null,   // only when intent=clarify\n'
     '  "user_visible_summary": string          // 1-2 sentence agent message\n'
@@ -64,8 +65,12 @@ PLANNER_SYSTEM_PROMPT = (
     "Extras rules:\n"
     "- describe_price_series: attach to metrics when user asks what the trend/performance looks like\n"
     "- risk: attach to metrics when user asks about risk, Sharpe, Sortino, Calmar, VaR, or CVaR\n"
-    "- anomalies: attach to data_quality when user asks about anomalies, outliers, jumps, or gaps\n"
+    "- anomalies: attach to data_quality for anomaly-only requests; attach to chart when user asks for both a chart and anomaly checks\n"
     "- rolling: attach to chart when user asks for rolling/window/moving metrics\n"
+    "A request for metrics plus a description must use metrics with describe_price_series, not chart. "
+    "Rolling charts must use their actual rolling_* chart kinds, not normalized_prices. "
+    "Keep the requested window, e.g. 60-day volatility -> rolling_volatility with rolling_windows=[60]. "
+    "Requests can combine chart kinds and extras; do not discard requested metrics or descriptions. "
     "If you do not know the user's intent, prefer clarify."
 )
 
@@ -90,11 +95,13 @@ class PlannerContext:
     ``dataset_summaries`` is a list of ``{dataset_id, asset_id,
     date_min, date_max, row_count}`` dicts — the same shape
     ``LocalDatasetStore.list_in_session`` returns. The planner should
-    never see more than this.
+    receives only backend-verified prior analysis parameters, not raw files.
     """
 
     session_id: str
     dataset_summaries: tuple[dict[str, Any], ...]
+    previous_analysis: AnalysisPlan | None = None
+    previous_chart_count: int = 0
 
 
 class Planner(Protocol):
@@ -120,7 +127,7 @@ _DATA_QUALITY_PATTERNS = (
 )
 
 _REPORT_PATTERNS = (
-    r"生成报告",
+    r"(?:生成|出|制作|整理|导出|写|做).{0,12}报告",
     r"build.{0,4}report",
     r"full.{0,4}report",
     r"完整报告",
@@ -160,6 +167,7 @@ _ROLLING_PATTERNS = (
     r"rolling",
     r"window",
     r"moving",
+    r"\d+\s*(?:日|天|days?).{0,8}(?:波动|收益|回撤|volatility|return|drawdown)",
 )
 
 
@@ -283,17 +291,7 @@ def _extract_chart_kinds(text: str) -> tuple[ChartKind, ...]:
     found: list[ChartKind] = []
     seen: set[ChartKind] = set()
     lowered = text.lower()
-    has_chart_keyword = _match_any(
-        lowered,
-        (
-            r"图",
-            r"chart",
-            r"plot",
-            r"graph",
-            r"走势",
-            r"趋势",
-        ),
-    )
+    has_chart_keyword = _match_any(lowered, _CHART_PATTERNS)
     if has_chart_keyword:
         if "归一化" in lowered or "normalized" in lowered:
             found.append(ChartKind.NORMALIZED_PRICES)
@@ -302,6 +300,25 @@ def _extract_chart_kinds(text: str) -> tuple[ChartKind, ...]:
             if ChartKind.DRAWDOWN not in seen:
                 found.append(ChartKind.DRAWDOWN)
                 seen.add(ChartKind.DRAWDOWN)
+    if _match_any(lowered, _ROLLING_PATTERNS):
+        found = []
+        clauses = re.split(r"[，,、；;]|以及|并且|和|\band\b", lowered)
+        rolling_text = " ".join(part for part in clauses if _match_any(part, _ROLLING_PATTERNS))
+        if "波动" in rolling_text or "volatility" in rolling_text:
+            found.append(ChartKind.ROLLING_VOLATILITY)
+        if "收益" in rolling_text or "return" in rolling_text:
+            found.append(ChartKind.ROLLING_RETURN)
+        if "回撤" in rolling_text or "drawdown" in rolling_text:
+            found.append(ChartKind.ROLLING_DRAWDOWN)
+        if "归一化" in lowered or "价格图" in lowered:
+            found.insert(0, ChartKind.NORMALIZED_PRICES)
+        if any(
+            ("回撤" in part or "drawdown" in part) and not _match_any(part, _ROLLING_PATTERNS)
+            for part in clauses
+        ):
+            found.append(ChartKind.DRAWDOWN)
+        if not found:
+            found = [ChartKind.ROLLING_VOLATILITY]
     return tuple(found)
 
 
@@ -334,13 +351,50 @@ class RulePlanner:
         if not text:
             raise PlannerError("user_request is empty")
 
-        if not is_supported_analysis_request(text):
+        if is_out_of_scope_request(text):
             return AnalysisPlan(
                 intent=Intent.OUT_OF_SCOPE,
                 user_visible_summary=("超出范围：我目前只处理已上传 CSV 的历史价格数据分析。"),
             )
 
         available = context.dataset_summaries
+        if re.search(
+            r"(?:分析|解读|解释|总结|说明).{0,12}(?:这|刚才|上面|之前).{0,12}图|(?:explain|analyze).{0,12}(?:these|previous).{0,12}charts",
+            text,
+            re.IGNORECASE,
+        ):
+            previous = context.previous_analysis
+            if previous is None or not previous.charts:
+                return AnalysisPlan(
+                    intent=Intent.CLARIFY,
+                    clarifying_question="请先生成图表，或选择要解读的分析记录。",
+                )
+            count_match = re.search(r"([一二三四五六七八九十]|\d+)\s*(?:个|张|幅)\s*图", text)
+            if count_match:
+                token = count_match.group(1)
+                count = int(token) if token.isdigit() else "一二三四五六七八九十".index(token) + 1
+                if count != context.previous_chart_count:
+                    return AnalysisPlan(
+                        intent=Intent.CLARIFY,
+                        clarifying_question=f"当前引用的分析有 {context.previous_chart_count} 张图，你指的是哪 {count} 张？",
+                    )
+            extras = [AnalysisExtra.DESCRIBE_PRICE_SERIES]
+            if any(kind.value.startswith("rolling_") for kind in previous.charts):
+                extras.append(AnalysisExtra.ROLLING)
+            return AnalysisPlan(
+                intent=Intent.METRICS,
+                dataset_refs=previous.dataset_refs,
+                date_range=previous.date_range,
+                charts=previous.charts,
+                rolling_windows=previous.rolling_windows,
+                metrics=(
+                    MetricName.PERIOD_RETURN,
+                    MetricName.MAX_DRAWDOWN,
+                    MetricName.ANNUALIZED_VOLATILITY,
+                ),
+                extras=tuple(extras),
+                user_visible_summary=f"我会结合刚才的 {context.previous_chart_count} 张图，说明走势、回撤及波动特点。",
+            )
         dataset_refs = _extract_dataset_refs(text, available)
         metrics = _extract_metrics(text)
         chart_kinds = _extract_chart_kinds(text)
@@ -350,6 +404,36 @@ class RulePlanner:
             or _match_any(text, _COMPARE_ONLY_PATTERNS)
             or _match_any(text, _CHART_PATTERNS)
         )
+
+        if _match_any(text, _REPORT_PATTERNS):
+            previous = context.previous_analysis
+            windows = tuple(
+                dict.fromkeys(
+                    int(w) for w in re.findall(r"(\d+)\s*(?:日|天|days?)", text, re.IGNORECASE)
+                )
+            ) or (previous.rolling_windows if previous else (60,))
+            if len(windows) > 6 or any(w < 2 or w > 2520 for w in windows):
+                return AnalysisPlan(
+                    intent=Intent.CLARIFY,
+                    clarifying_question="滚动窗口需为 2 至 2520 条观测，最多选择 6 个窗口。",
+                )
+            explicit_refs = tuple(
+                s["asset_id"] for s in available if s["asset_id"].lower() in text.lower()
+            )
+            return AnalysisPlan(
+                intent=Intent.REPORT,
+                dataset_refs=explicit_refs or (previous.dataset_refs if previous else dataset_refs),
+                date_range=self._maybe_date_payload(text)
+                or (previous.date_range if previous else None),
+                metrics=metrics
+                or (previous.metrics if previous else ())
+                or (MetricName.PERIOD_RETURN, MetricName.MAX_DRAWDOWN),
+                charts=chart_kinds
+                or (previous.charts if previous else ())
+                or (ChartKind.NORMALIZED_PRICES, ChartKind.DRAWDOWN),
+                rolling_windows=windows,
+                user_visible_summary="报告已生成，包含本次分析的指标和图表，可在右侧报告视图查看。",
+            )
 
         # Decide intent by precedence. profile/data_quality win over
         # the "which dataset?" clarification when the user has signalled
@@ -363,7 +447,7 @@ class RulePlanner:
             )
 
         if _match_any(text, _DATA_QUALITY_PATTERNS) or _match_any(text, _ANOMALY_PATTERNS):
-            if metrics or chart_kinds:
+            if has_metric_signal or has_chart_signal:
                 # User wants metrics/charts AND quality — fall through.
                 pass
             else:
@@ -403,25 +487,6 @@ class RulePlanner:
                 user_visible_summary="我需要更多信息才能继续分析。",
             )
 
-        if _match_any(text, _REPORT_PATTERNS):
-            date_range = self._maybe_date_payload(text)
-            return AnalysisPlan(
-                intent=Intent.REPORT,
-                dataset_refs=dataset_refs,
-                date_range=date_range,
-                metrics=metrics
-                or (
-                    MetricName.PERIOD_RETURN,
-                    MetricName.MAX_DRAWDOWN,
-                ),
-                charts=chart_kinds
-                or (
-                    ChartKind.NORMALIZED_PRICES,
-                    ChartKind.DRAWDOWN,
-                ),
-                user_visible_summary=("我会生成包含指标和图表的完整报告。"),
-            )
-
         # "走势怎么样" / "what's the trend" → describe (metrics + extra).
         # Fires only when no explicit chart keyword (走势图 / 画图 / plot /
         # chart) is present, otherwise the chart branch below wins.
@@ -442,16 +507,34 @@ class RulePlanner:
 
         if has_chart_signal or _match_any(text, _ROLLING_PATTERNS):
             date_range = self._maybe_date_payload(text)
-            extras = ()
+            chart_extras: list[AnalysisExtra] = []
             if _match_any(text, _ROLLING_PATTERNS):
-                extras = (AnalysisExtra.ROLLING,)
+                chart_extras.append(AnalysisExtra.ROLLING)
+            if _match_any(text, _ANOMALY_PATTERNS):
+                chart_extras.append(AnalysisExtra.ANOMALIES)
+            if _match_any(text, _DESCRIBE_PATTERNS) and metrics:
+                chart_extras.append(AnalysisExtra.DESCRIBE_PRICE_SERIES)
+            windows = tuple(
+                dict.fromkeys(
+                    int(w) for w in re.findall(r"(\d+)\s*(?:日|天|days?)", text, re.IGNORECASE)
+                )
+            ) or (60,)
+            if AnalysisExtra.ROLLING in chart_extras and (
+                len(windows) > 6 or any(w < 2 or w > 2520 for w in windows)
+            ):
+                return AnalysisPlan(
+                    intent=Intent.CLARIFY,
+                    clarifying_question="滚动窗口需为 2 至 2520 条观测，最多选择 6 个窗口。",
+                )
             charts = chart_kinds or (ChartKind.NORMALIZED_PRICES,)
             return AnalysisPlan(
                 intent=Intent.CHART,
                 dataset_refs=dataset_refs,
                 date_range=date_range,
                 charts=charts,
-                extras=extras,
+                metrics=metrics if AnalysisExtra.ROLLING not in chart_extras else (),
+                rolling_windows=windows,
+                extras=tuple(chart_extras),
                 user_visible_summary=("我会生成你需要的趋势图表。"),
             )
 
@@ -534,6 +617,16 @@ class LLMPlanner:
                 ),
             },
         ]
+        if context.previous_analysis is not None:
+            messages.insert(
+                1,
+                {
+                    "role": "system",
+                    "content": "Backend-verified previous analysis for contextual follow-ups: "
+                    + context.previous_analysis.model_dump_json()
+                    + f"; chart_count={context.previous_chart_count}. For interpretation, return metrics with describe_price_series and rolling extras where needed; preserve datasets, date range, chart kinds, and windows. Do not regenerate charts unless asked.",
+                },
+            )
         turn = self._model.complete_with_tools(messages=messages, tools=[], timeout_seconds=30.0)
         if turn.error:
             raise PlannerError(f"planner model call failed: {turn.error}")
@@ -569,6 +662,7 @@ class LLMPlanner:
             date_range=date_range,
             metrics=tuple(MetricName(m) for m in payload.get("metrics") or ()),
             charts=tuple(ChartKind(c) for c in payload.get("charts") or ()),
+            rolling_windows=tuple(payload.get("rolling_windows") or (60,)),
             extras=tuple(AnalysisExtra(e) for e in payload.get("extras") or ()),
             clarifying_question=payload.get("clarifying_question"),
             user_visible_summary=payload.get("user_visible_summary") or "",
